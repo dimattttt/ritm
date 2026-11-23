@@ -160,9 +160,9 @@ console.log("9. дневник + встреча: «запиши в дневни�
   check("промпт знает дату и время", prompt.includes("Сегодня: 2026-11-23 (понедельник), сейчас 12:30"), prompt.slice(-300));
   check("запись в дневнике", state.journal.length === 1 && state.journal[0].text.includes("17:00") && state.journal[0].date === "2026-11-23" && state.journal[0].source === "voice");
   const t = state.tasks["2026-11-23"][0];
-  check("задача-встреча 17:00", t.text === "Встреча" && t.time === "17:00" && t.done === false && t.remindBefore === 15, JSON.stringify(t));
+  check("задача-встреча 17:00–18:00 в Календаре (tasks[дата])", t.text === "Встреча" && t.time === "17:00" && t.timeEnd === "18:00" && t.event === true && t.done === false && t.remindBefore === 15, JSON.stringify(t));
   check("напоминание отдано боту", pushed.length === 1 && pushed[0].tasks[0].task.time === "17:00" && pushed[0].tz === "Europe/Moscow");
-  check("сводка: дневник и встреча", /📔 Дневник/.test(res.summary) && /📅 Задачи и встречи: Встреча в 17:00, напомню за 15 мин/.test(res.summary), res.summary);
+  check("сводка: дневник и встреча", /📔 Дневник/.test(res.summary) && /📅 Календарь RITM: Встреча сегодня 17:00–18:00, напомню за 15 мин/.test(res.summary), res.summary);
 }
 
 console.log("10. встреча завтра в 9 утра, напомнить за полчаса");
@@ -170,10 +170,15 @@ console.log("10. встреча завтра в 9 утра, напомнить �
   const { state, res } = await runWith(JSON.stringify({ tasks: [{ text: "Позвонить врачу", time: "9:00", date: "2026-11-24", remindBefore: 30 }] }));
   const t = state.tasks["2026-11-24"]?.[0];
   check("на завтра 09:00", t?.time === "09:00" && t.remindBefore === 30, JSON.stringify(state.tasks));
-  check("сводка «завтра»", /Позвонить врачу завтра в 09:00, напомню за 30 мин/.test(res.summary), res.summary);
+  check("сводка «завтра»", /Позвонить врачу завтра 09:00–10:00, напомню за 30 мин/.test(res.summary), res.summary);
   const far = validateVoicePatch({ tasks: [{ text: "x", date: "2030-01-01" }] }, { dateKey: "2026-11-23" });
   check("дата за пределами года → сегодня", far.tasks[0].date === null);
   check("без времени — без напоминания заранее", far.tasks[0].remindBefore === 0);
+  const long = await runWith(JSON.stringify({ tasks: [{ text: "Совещание", time: "14:00", durationMinutes: 90 }, { text: "Поздно", time: "23:30" }, { text: "Купить хлеб" }] }));
+  const day = long.state.tasks["2026-11-23"];
+  check("длительность 90 мин → 14:00–15:30", day[0].timeEnd === "15:30" && day[0].event === true, JSON.stringify(day[0]));
+  check("до полуночи не переносим → 23:30–23:59", day[1].timeEnd === "23:59", JSON.stringify(day[1]));
+  check("задача без времени — не встреча", !day[2].event && !day[2].timeEnd && day[2].time === null);
 }
 
 console.log("11. «выполнил все задачи» отмечает разовые и повторяющиеся задачи дня");

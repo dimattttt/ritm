@@ -330,6 +330,10 @@ const BODY = "'Onest', system-ui, -apple-system, 'Segoe UI', sans-serif";
 /* ============ Даты ============ */
 const pad = (n) => String(n).padStart(2, "0");
 // Время задачи: одно значение ("17:00") или диапазон ("17:00–18:00"), если задан конец
+// Встречи и задачи со временем (в том числе голосом — netlify/lib/voice-log.mjs) в Календаре RITM
+const EVENT_COLOR = "#7CC4FF";
+const JOURNAL_COLOR = "#FFD166";
+const isTimedEvent = (t) => !!(t && t.event);
 const taskTimeLabel = (t) => (t?.time ? `${t.time}${t.timeEnd ? `–${t.timeEnd}` : ""}` : "");
 const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const wdOf = (d) => (d.getDay() + 6) % 7;
@@ -466,7 +470,7 @@ function ListsManagerSheet({ T, lists, onClose, onAdd, onDelete }) {
 
 // Единая карточка задачи: заголовок в первой строке, время/повтор/список — во второй, компактнее на узких экранах
 function TaskRow({ T, item, list, onToggle, onEdit }) {
-  const hasMeta = !!(item.time || item.kind === "daily" || list);
+  const hasMeta = !!(item.time || item.kind === "daily" || list || item.event);
   return (
     <Card T={T} style={{ padding: "12px 16px" }}>
       <div className="flex items-center gap-3">
@@ -479,6 +483,9 @@ function TaskRow({ T, item, list, onToggle, onEdit }) {
         <div className="flex items-center gap-2 flex-wrap mt-2" style={{ paddingLeft: 38 }}>
           {item.time && <span style={{ fontSize: 12, color: T.a, fontWeight: 700, flexShrink: 0 }}>{taskTimeLabel(item)}</span>}
           {item.kind === "daily" && <Repeat size={13} color={MUTED} style={{ flexShrink: 0 }} />}
+          {item.event && <span className="flex items-center gap-1" style={{ fontSize: 11, color: EVENT_COLOR, fontWeight: 700, flexShrink: 0 }}><CalendarDays size={12} /> встреча</span>}
+          {item.remindBefore > 0 && item.time && !item.done && <span className="flex items-center gap-1" style={{ fontSize: 11, color: MUTED, flexShrink: 0 }}><Bell size={11} /> за {item.remindBefore} мин</span>}
+          {item.source === "voice" && <Mic size={11} color={MUTED} style={{ flexShrink: 0 }} aria-label="Добавлено голосом" />}
           {list && <ListChip T={T} list={list} active onClick={onEdit} />}
         </div>
       )}
@@ -3501,6 +3508,29 @@ function Today({ T, st, up, program, run, week, go, name, streak, norm, onPhoto,
                   ))}
                 </div>
               )}
+              {(() => {
+                // Ближайшие встречи на следующие 7 дней (в том числе добавленные голосом) — тап открывает Календарь
+                const soon = [];
+                for (let i = 1; i <= 7 && soon.length < 3; i++) {
+                  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+                  const dk = keyOf(d);
+                  (st.tasks[dk] || []).filter((t) => t.time && !t.done).sort(sortByPriorityTime).forEach((t) => soon.length < 3 && soon.push({ t, d, i }));
+                }
+                if (!soon.length) return null;
+                return (
+                  <Card T={T} onClick={() => go("cal")} className="mb-2" style={{ padding: "10px 16px" }}>
+                    <Muted size={11} style={{ color: EVENT_COLOR, fontWeight: 700 }}>Скоро в календаре</Muted>
+                    {soon.map(({ t, d, i }) => (
+                      <div key={`${i}-${t.id}`} className="flex items-center gap-2 mt-1" style={{ fontSize: 13 }}>
+                        <CalendarDays size={13} color={MUTED} />
+                        <span style={{ color: MUTED }}>{i === 1 ? "Завтра" : cap(d.toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "short" }))}</span>
+                        <span style={{ color: T.a, fontWeight: 700 }}>{taskTimeLabel(t)}</span>
+                        <span className="flex-1 min-w-0 truncate">{t.text}</span>
+                      </div>
+                    ))}
+                  </Card>
+                );
+              })()}
               <div className="flex gap-2 mb-2">
                 <input value={newText} onChange={(e) => setNewText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addTask()}
                   placeholder="Новая задача" className="flex-1 rounded-xl px-4 py-3 bg-transparent outline-none"
@@ -5110,6 +5140,8 @@ function CalendarScreen({ T, st, up, program, run, week, openPay, openSchedule }
   const daily = allRecurring.filter((t) => taskOccursOn(t, selDate)).sort(sortByPriorityTime);
   const canAddHabit = st.pro || st.habits.length < FREE_HABITS;
   const selOwn = (st.workouts || []).find((x) => x.id === program.customDays[selW]);
+  const journalDays = useMemo(() => new Set((st.journal || []).map((e) => e.date)), [st.journal]);
+  const selJournal = (st.journal || []).filter((e) => e.date === sel).sort((a, b) => a.createdAt - b.createdAt);
 
   const addTask = () => {
     const t = text.trim();
@@ -5178,7 +5210,9 @@ function CalendarScreen({ T, st, up, program, run, week, openPay, openSchedule }
                 <span className="flex gap-1" style={{ height: 4 }}>
                   {(program.schedule[w] !== undefined || program.customDays[w]) && <Dot c={isSel ? T.on : T.a} />}
                   {run.schedule[w] !== undefined && <Dot c={isSel ? T.on : T.b} />}
-                  {((st.tasks[k] || []).length > 0 || allRecurring.some((t) => taskOccursOn(t, d))) && <Dot c={isSel ? T.on : "rgba(255,255,255,0.6)"} />}
+                  {(st.tasks[k] || []).some(isTimedEvent) && <Dot c={isSel ? T.on : EVENT_COLOR} />}
+                  {((st.tasks[k] || []).some((t) => !isTimedEvent(t)) || allRecurring.some((t) => taskOccursOn(t, d))) && <Dot c={isSel ? T.on : "rgba(255,255,255,0.6)"} />}
+                  {journalDays.has(k) && <Dot c={isSel ? T.on : JOURNAL_COLOR} />}
                 </span>
               </button>
             );
@@ -5187,7 +5221,9 @@ function CalendarScreen({ T, st, up, program, run, week, openPay, openSchedule }
         <div className="flex gap-4 justify-center mt-2 pb-1" style={{ fontSize: 11, color: MUTED }}>
           <span className="flex items-center gap-1"><Dot c={T.a} /> силовая</span>
           <span className="flex items-center gap-1"><Dot c={T.b} /> бег</span>
+          <span className="flex items-center gap-1"><Dot c={EVENT_COLOR} /> встречи</span>
           <span className="flex items-center gap-1"><Dot c="rgba(255,255,255,0.6)" /> задачи</span>
+          <span className="flex items-center gap-1"><Dot c={JOURNAL_COLOR} /> дневник</span>
         </div>
       </Card>
 

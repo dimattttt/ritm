@@ -196,10 +196,10 @@ export function normTime(v) {
 // «17:00» минус 15 минут → «16:45»; через полночь не переносим (null)
 export function timeMinus(time, minutes) {
   const t = normTime(time);
-  if (!t || !(minutes > 0)) return null;
+  if (!t || !minutes) return null; // отрицательное minutes — прибавить (конец встречи)
   const [h, m] = t.split(":").map(Number);
   const total = h * 60 + m - minutes;
-  if (total < 0) return null;
+  if (total < 0 || total >= 24 * 60) return null;
   return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
@@ -411,6 +411,13 @@ export function applyVoicePatchDetailed(state, patch, { dateKey, now = Date.now(
         source: "voice",
       };
       if (t.time && t.remindBefore) task.remindBefore = t.remindBefore;
+      // Встреча со временем — событие в Календаре RITM (экран «Календарь»): конец, если назвали длительность
+      if (t.time) {
+        task.event = true;
+        // Как карточки «06:00–07:00» в Календаре: без названной длительности — 1 час (до полуночи)
+        const end = timeMinus(t.time, -(t.durationMinutes || 60)) || (t.time < "23:59" ? "23:59" : null);
+        if (end && end > t.time) task.timeEnd = end;
+      }
       next[date] = [...(next[date] || []), task];
       report.tasksAdded.push({ date, task, durationMinutes: t.durationMinutes || null, alarmMinutes: t.time ? (t.remindBefore ?? DEFAULT_REMIND_BEFORE) : 0 });
     });
@@ -569,11 +576,12 @@ export function summarizePatch(patch, { isPro = false, used = 0, report = null, 
   if (body.length) lines.push(`❤️ Здоровье: ${body.join(", ")}`);
   if (patch.tasks?.length) {
     const items = patch.tasks.map((t) => {
-      const when = [ruDate(t.date, dateKey), t.time ? `в ${t.time}` : ""].filter(Boolean).join(" ");
+      const end = t.time ? (timeMinus(t.time, -(t.durationMinutes || 60)) || "23:59") : null;
+      const when = [ruDate(t.date, dateKey) || (t.time ? "сегодня" : ""), t.time ? (end && end > t.time ? `${t.time}–${end}` : `в ${t.time}`) : ""].filter(Boolean).join(" ");
       const remind = t.time && t.remindBefore ? `, напомню за ${t.remindBefore} мин` : "";
       return `${t.text}${when ? ` ${when}` : ""}${remind}`;
     });
-    lines.push(`📅 Задачи и встречи: ${items.join("; ")}`);
+    lines.push(`📅 Календарь RITM: ${items.join("; ")}`);
   }
   if (patch.completeAllTasks || patch.tasksDone?.length || patch.completeAllHabits || patch.habitsDone?.length) {
     const done = report ? report.tasksCompleted.length : null;
