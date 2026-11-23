@@ -33,11 +33,18 @@ function flatten(v) {
 }
 function pickText(body) {
   if (!body || typeof body !== "object") return "";
-  for (const k of ["text", "текст", "Text", "query", "message"]) {
-    const t = flatten(body[k]).trim();
-    if (t) return t;
+  const norm = (k) => String(k).trim().toLowerCase().replace(/[техс]/g, (c) => ({ т: "t", е: "e", х: "x", с: "c" })[c]);
+  const wanted = ["text", "tekst", "teкст", "query", "message"];
+  for (const [k, v] of Object.entries(body)) {
+    const nk = norm(k);
+    if (wanted.includes(nk) || nk === "tekct" || nk === "текст" || nk.startsWith("text")) {
+      const t = flatten(v).trim();
+      if (t) return t;
+    }
   }
-  return "";
+  // Последний шанс: единственное непустое строковое поле, кроме tz.
+  const rest = Object.entries(body).filter(([k]) => norm(k) !== "tz").map(([, v]) => flatten(v).trim()).filter((t) => t && t !== "true" && t !== "false");
+  return rest.length === 1 ? rest[0] : "";
 }
 async function readBody(req) {
   const ctype = req.headers.get("content-type") || "";
