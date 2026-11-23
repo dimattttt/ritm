@@ -6,7 +6,7 @@ import { authUser, verifySession } from "../lib/auth.mjs";
 import { verifyShortcutToken } from "../lib/voice-token.mjs";
 import { completeAiText } from "../lib/ai-chat.mjs";
 import { loadUserState, saveUserState } from "../lib/voice-store.mjs";
-import { runVoiceLog, DEFAULT_TZ } from "../lib/voice-log.mjs";
+import { runVoiceLog, DEFAULT_TZ, calendarFields } from "../lib/voice-log.mjs";
 import { getPro } from "../lib/pro-store.mjs";
 import { pushTaskReminders } from "../lib/reminder-push.mjs";
 
@@ -94,7 +94,8 @@ export default async (req) => {
   });
 
   if (!result.ok) return json({ ok: false, error: result.error, message: result.message }, result.status || 400);
-  const out = { ok: true, message: result.summary, date: result.dateKey };
+  // Календарь iPhone: hasEvent, events[], eventTitle/eventStart/eventEnd — всегда есть, чтобы «Если» в Быстрой команде не спотыкалось
+  const out = { ok: true, message: result.summary, date: result.dateKey, ...calendarFields(result.events || []) };
   if (result.intent === "startWorkout") out.openUrl = appLink("workout");
   else if (result.intent === "startRun") out.openUrl = appLink("run");
   return json(out);

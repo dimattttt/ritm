@@ -2,7 +2,7 @@
 import {
   extractJson, validateVoicePatch, applyVoicePatch, summarizePatch,
   patchHasAnything, voiceLimitReached, runVoiceLog, dateKeyInTz,
-  FREE_VOICE_LOGS, applyVoicePatchDetailed, buildPromptContext, nameMatches, timeMinus, normTime,
+  FREE_VOICE_LOGS, applyVoicePatchDetailed, buildPromptContext, buildCalendarEvents, calendarFields, nameMatches, timeMinus, normTime,
 } from "../netlify/lib/voice-log.mjs";
 import { reminderEntriesFor, pushTaskReminders } from "../netlify/lib/reminder-push.mjs";
 
@@ -242,6 +242,30 @@ console.log("14. напоминания бота (ritm-reminders) для вст�
   await pushTaskReminders(9, { tasks: [{ date: "2026-11-23", task: { id: 1, text: "A", time: "10:00" } }], tz: "Europe/Moscow" }, store);
   const fresh = JSON.parse(store.data.get("user:9"));
   check("новая запись: chatId и пояс", fresh.chatId === 9 && fresh.timezone === "Europe/Moscow" && fresh.tasks.length === 1);
+}
+
+console.log("15. события для Календаря iPhone (поля ответа /api/voice-log)");
+{
+  const { res } = await runWith(JSON.stringify({
+    journal: { text: "Сегодня в 17:00 встреча" },
+    tasks: [{ text: "Встреча", time: "17:00" }, { text: "Купить подарок" }, { text: "Созвон", time: "9:30", date: "2026-11-24", remindBefore: 60, durationMinutes: 30 }],
+  }), { text: "сегодня в 17:00 встреча" });
+  check("два события (задача без времени — не событие)", res.events?.length === 2, JSON.stringify(res.events));
+  const e = res.events[0];
+  check("ISO с поясом Москвы", e.start === "2026-11-23T17:00:00+03:00" && e.end === "2026-11-23T18:00:00+03:00", JSON.stringify(e));
+  check("напоминание по умолчанию 15", e.alarmMinutes === 15 && e.title === "Встреча" && e.notes.includes("17:00"));
+  check("второе: завтра 9:30, 30 мин, за час", res.events[1].start === "2026-11-24T09:30:00+03:00" && res.events[1].end === "2026-11-24T10:00:00+03:00" && res.events[1].alarmMinutes === 60, JSON.stringify(res.events[1]));
+  const f = calendarFields(res.events);
+  check("плоские поля первого события", f.hasEvent === true && f.eventTitle === "Встреча" && f.eventStart === "2026-11-23 17:00" && f.eventEnd === "2026-11-23 18:00", JSON.stringify(f));
+  check("в events нет служебных полей", !("startLocal" in f.events[0]) && Object.keys(f.events[0]).join() === "title,start,end,alarmMinutes,notes");
+  const none = calendarFields([]);
+  check("без встреч hasEvent=false и пустые строки", none.hasEvent === false && none.eventStart === "" && none.events.length === 0);
+  const water = await runWith('{"waterMl": 200}');
+  check("вода → событий нет", Array.isArray(water.res.events) && water.res.events.length === 0);
+  const ny = buildCalendarEvents([{ date: "2026-11-23", task: { text: "Ночь", time: "23:30" } }], { tz: "Asia/Yekaterinburg" })[0];
+  check("через полночь и другой пояс", ny.start === "2026-11-23T23:30:00+05:00" && ny.end === "2026-11-24T00:30:00+05:00" && ny.endLocal === "2026-11-24 00:30", JSON.stringify(ny));
+  const dst = buildCalendarEvents([{ date: "2026-03-29", task: { text: "X", time: "01:30" }, durationMinutes: 90 }], { tz: "Europe/Berlin" })[0];
+  check("переход на летнее время", dst.start === "2026-03-29T01:30:00+01:00" && dst.end === "2026-03-29T04:00:00+02:00", JSON.stringify(dst));
 }
 
 if (failed) {

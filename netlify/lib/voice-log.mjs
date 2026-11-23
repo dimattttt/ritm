@@ -25,7 +25,7 @@ export const VOICE_PARSE_PROMPT = `Ты — модуль голосового у
   "steps": число или null,
   "sleep": {"hours": число, "quality": 1},
   "wellbeing": {"energy": 3, "mood": 3, "soreness": 3, "note": ""},
-  "tasks": [{"text": "текст задачи или встречи", "time": "17:00" или null, "date": "ГГГГ-ММ-ДД" или null, "remindBefore": минут или null}],
+  "tasks": [{"text": "текст задачи или встречи", "time": "17:00" или null, "date": "ГГГГ-ММ-ДД" или null, "remindBefore": минут или null, "durationMinutes": минут или null}],
   "completeAllTasks": true,
   "completeAllHabits": true,
   "tasksDone": ["часть названия выполненной задачи"],
@@ -44,7 +44,7 @@ export const VOICE_PARSE_PROMPT = `Ты — модуль голосового у
 - run: если УЖЕ пробежал (или указал километры бега). km и minutes — только если названы. «Пробежал 10 км» → {"km": 10, "minutes": null}. startRun: true, если просит начать пробежку.
 - weightKg, steps, sleep.hours, sleep.quality (1–5, 5 лучше) — только если явно сказаны.
 - wellbeing: энергия, настроение, мышечная боль по шкале 1–5, только если человек описал самочувствие.
-- tasks: новые дела, встречи, события, напоминания на будущее («в 17:00 встреча», «завтра позвонить маме», «напомни купить подарок»). time — «ЧЧ:ММ» в 24-часовом формате («в 5 вечера» = "17:00"), иначе null. date — дата «ГГГГ-ММ-ДД», если названа («завтра», «в пятницу»), иначе null (= сегодня). remindBefore — за сколько минут напомнить, только если человек сказал («напомни за полчаса» = 30), иначе null. text — коротко, без времени и даты («Встреча», «Позвонить маме»).
+- tasks: новые дела, встречи, события, напоминания на будущее («в 17:00 встреча», «завтра позвонить маме», «напомни купить подарок»). time — «ЧЧ:ММ» в 24-часовом формате («в 5 вечера» = "17:00"), иначе null. date — дата «ГГГГ-ММ-ДД», если названа («завтра», «в пятницу»), иначе null (= сегодня). remindBefore — за сколько минут напомнить, только если человек сказал («напомни за полчаса» = 30), иначе null. durationMinutes — длительность, только если названа («встреча на полтора часа» = 90, «с 17 до 18:30» → time "17:00", durationMinutes 90), иначе null. text — коротко, без времени и даты («Встреча», «Позвонить маме»).
 - completeAllTasks: true на «выполнил все задачи», «сделал все дела», «закрыл все задачи». completeAllHabits: true на «выполнил все привычки». «Сделал всё запланированное / всё на сегодня» — оба true.
 - tasksDone / habitsDone: если отметил конкретные дела или привычки («сделал растяжку», «прочитал 10 минут», «позвонил маме»). Используй слова из списков ниже, если они подходят.
 - journal: дневник — свободная заметка, мысль, итог дня, настроение, а также всё, что человек просит «записать в дневник». mood 1–5 или null. Если человек просит записать в дневник встречу или дело со временем — сохрани текст в journal И добавь событие в tasks. Не дублируй в дневник еду и километры, если они уже разобраны.
@@ -257,7 +257,8 @@ export function validateVoicePatch(raw, { hour = 12, dateKey = null } = {}) {
       if (date && dateKey && (date < addDaysKey(dateKey, -1) || date > addDaysKey(dateKey, 366))) date = null;
       const rb = t && typeof t === "object" ? int(t.remindBefore, 0, 24 * 60) : null;
       const remindBefore = time ? (rb != null ? rb : DEFAULT_REMIND_BEFORE) : 0;
-      return { text, time, date, remindBefore };
+      const durationMinutes = time && t && typeof t === "object" ? int(t.durationMinutes, 5, 24 * 60) : null;
+      return { text, time, date, remindBefore, durationMinutes };
     })
     .filter(Boolean)
     .slice(0, 5);
@@ -411,7 +412,7 @@ export function applyVoicePatchDetailed(state, patch, { dateKey, now = Date.now(
       };
       if (t.time && t.remindBefore) task.remindBefore = t.remindBefore;
       next[date] = [...(next[date] || []), task];
-      report.tasksAdded.push({ date, task });
+      report.tasksAdded.push({ date, task, durationMinutes: t.durationMinutes || null, alarmMinutes: t.time ? (t.remindBefore ?? DEFAULT_REMIND_BEFORE) : 0 });
     });
     s.tasks = next;
   }
@@ -462,6 +463,79 @@ function ruDate(key, todayKey) {
   const [, m, d] = key.split("-").map(Number);
   const months = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
   return `${d} ${months[m - 1] || ""}`.trim();
+}
+
+// ===== События для Календаря iPhone =====
+// Сервер не видит календарь телефона, поэтому отдаёт встречи в ответе — Быстрая команда добавляет их сама.
+
+// Смещение пояса (мс) в момент ms: локальное время в tz минус UTC
+function tzOffsetMs(ms, tz) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(ms)).filter((x) => x.type !== "literal").map((x) => [x.type, Number(x.value)]));
+  return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour % 24, parts.minute, parts.second) - Math.floor(ms / 1000) * 1000;
+}
+const p2 = (n) => String(n).padStart(2, "0");
+// «2026-11-24» + «17:00» в поясе tz → момент UTC (мс)
+export function zonedToMs(dateKey, time, tz = DEFAULT_TZ) {
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const [hh, mm] = time.split(":").map(Number);
+  const guess = Date.UTC(y, m - 1, d, hh, mm);
+  let zone = tz;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: zone }); } catch { zone = DEFAULT_TZ; }
+  let ms = guess - tzOffsetMs(guess, zone);
+  ms = guess - tzOffsetMs(ms, zone); // второй проход — на случай перехода на летнее время
+  return { ms, offset: tzOffsetMs(ms, zone), zone };
+}
+function localParts(ms, offset) {
+  const d = new Date(ms + offset);
+  return { y: d.getUTCFullYear(), mo: p2(d.getUTCMonth() + 1), d: p2(d.getUTCDate()), h: p2(d.getUTCHours()), mi: p2(d.getUTCMinutes()) };
+}
+function isoWithOffset(ms, offset) {
+  const l = localParts(ms, offset);
+  const sign = offset >= 0 ? "+" : "-";
+  const abs = Math.abs(Math.round(offset / 60000));
+  return `${l.y}-${l.mo}-${l.d}T${l.h}:${l.mi}:00${sign}${p2(Math.floor(abs / 60))}:${p2(abs % 60)}`;
+}
+// Формат, который Быстрые команды надёжно понимают как дату: «2026-11-24 17:00»
+function shortcutDate(ms, offset) {
+  const l = localParts(ms, offset);
+  return `${l.y}-${l.mo}-${l.d} ${l.h}:${l.mi}`;
+}
+
+export function buildCalendarEvents(tasksAdded = [], { tz = DEFAULT_TZ, sourceText = "" } = {}) {
+  return tasksAdded
+    .filter((x) => x?.task?.time && KEY_RE.test(String(x.date || "")))
+    .map((x) => {
+      const { ms, offset, zone } = zonedToMs(x.date, x.task.time, tz);
+      const endMs = ms + (x.durationMinutes || 60) * 60000;
+      const endOffset = tzOffsetMs(endMs, zone);
+      const alarm = x.alarmMinutes != null ? x.alarmMinutes : DEFAULT_REMIND_BEFORE;
+      return {
+        title: x.task.text,
+        start: isoWithOffset(ms, offset),
+        end: isoWithOffset(endMs, endOffset),
+        startLocal: shortcutDate(ms, offset),
+        endLocal: shortcutDate(endMs, endOffset),
+        alarmMinutes: alarm,
+        timeZone: zone,
+        notes: sourceText ? `Добавлено голосом в RITM: «${String(sourceText).slice(0, 300)}»` : "Добавлено голосом в RITM",
+      };
+    });
+}
+
+// Поля ответа /api/voice-log для Календаря: events[] и плоские поля первого события
+export function calendarFields(events = []) {
+  const first = events[0];
+  return {
+    hasEvent: !!first,
+    events: events.map(({ title, start, end, alarmMinutes, notes }) => ({ title, start, end, alarmMinutes, notes })),
+    eventTitle: first ? first.title : "",
+    eventStart: first ? first.startLocal : "",
+    eventEnd: first ? first.endLocal : "",
+    eventAlarmMinutes: first ? first.alarmMinutes : 0,
+    eventNotes: first ? first.notes : "",
+  };
 }
 
 // Ответ по разделам. Одна строка на раздел, первая — «Записал:».
@@ -603,6 +677,7 @@ export async function runVoiceLog({
         summary: summarizePatch(patch, { isPro, used, report, dateKey }),
         patch, report, dateKey, used,
         intent: report.intent,
+        events: buildCalendarEvents(report.tasksAdded, { tz: zone, sourceText: rawText }),
       };
     }
   }
