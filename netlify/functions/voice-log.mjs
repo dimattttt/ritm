@@ -8,6 +8,11 @@ import { completeAiText } from "../lib/ai-chat.mjs";
 import { loadUserState, saveUserState } from "../lib/voice-store.mjs";
 import { runVoiceLog, DEFAULT_TZ } from "../lib/voice-log.mjs";
 import { getPro } from "../lib/pro-store.mjs";
+import { pushTaskReminders } from "../lib/reminder-push.mjs";
+
+const envGet = (key) => globalThis.Netlify?.env?.get(key) ?? process.env[key];
+// Ссылка, которая открывает Mini App в Telegram с параметром (главное приложение бота в BotFather)
+const appLink = (param) => `https://t.me/${String(envGet("BOT_USERNAME") || "ritmrubot").replace(/^@/, "")}?startapp=${param}`;
 
 const json = (data, status = 200) => Response.json(data, { status, headers: { ...CORS_HEADERS, "Cache-Control": "no-store" } });
 
@@ -85,10 +90,14 @@ export default async (req) => {
     completeAi: completeAiText,
     loadRecord: () => loadUserState(auth.user.id),
     saveRecord: ({ base, state }) => saveUserState(auth.user.id, { base, state, via: `voice:${auth.via}` }),
+    onTasksAdded: (payload) => pushTaskReminders(auth.user.id, payload),
   });
 
   if (!result.ok) return json({ ok: false, error: result.error, message: result.message }, result.status || 400);
-  return json({ ok: true, message: result.summary, date: result.dateKey });
+  const out = { ok: true, message: result.summary, date: result.dateKey };
+  if (result.intent === "startWorkout") out.openUrl = appLink("workout");
+  else if (result.intent === "startRun") out.openUrl = appLink("run");
+  return json(out);
 };
 
 export const config = { path: "/api/voice-log", method: ["POST", "OPTIONS"] };

@@ -14,6 +14,7 @@ import { getPro, restoreForUser } from "../lib/pro-store.mjs";
 import { completeAiText } from "../lib/ai-chat.mjs";
 import { loadUserState, saveUserState } from "../lib/voice-store.mjs";
 import { runVoiceLog, DEFAULT_TZ } from "../lib/voice-log.mjs";
+import { pushTaskReminders } from "../lib/reminder-push.mjs";
 import { getStore } from "@netlify/blobs";
 
 // Документы — страницы сайта (public/legal). Адрес сайта берём так же, как для остальных ссылок бота (siteBase).
@@ -50,6 +51,7 @@ async function voiceReply(userId, text) {
     completeAi: completeAiText,
     loadRecord: () => loadUserState(userId),
     saveRecord: ({ base, state }) => saveUserState(userId, { base, state, via: "voice:telegram" }),
+    onTasksAdded: (payload) => pushTaskReminders(userId, payload),
   });
 }
 
@@ -204,7 +206,7 @@ export default async (req) => {
         "📅 Календарь — задачи, повторы и привычки",
         "👥 Друзья — чат, совместные тренировки и общие цели",
         "🌅 Зарядка, дыхание, дневник, книги и челленджи",
-        "🎙 Напиши мне, что сделал — запишу в дневник: «съел банан, пробежал 10 км»",
+        "🎙 Напиши мне, что сделал или что сделать — разнесу по разделам: «съел банан, выпил 2 стакана воды», «начни тренировку», «запиши в дневник: сегодня в 17:00 встреча», «выполнил все задачи»",
         "",
         "Данные одинаковые в Telegram, на сайте и в приложении на телефоне.",
         "",
@@ -223,9 +225,15 @@ export default async (req) => {
     } else if (!verified) {
       await send(chatId, "Бот обновляет подключение — напиши то же самое ещё раз через пару секунд.");
     } else {
-      // Свободный текст — запись в дневник (еда, тренировка, пробежка, заметка)
+      // Свободный текст — голосовое управление: еда, вода, тренировка, бег, задачи и встречи, привычки, дневник, покупки
       const result = await voiceReply(from.id, text);
-      if (result.ok) await send(chatId, esc(result.summary), [[openButton]]);
+      if (result.ok) {
+        // «Начни тренировку» — кнопка открывает Mini App сразу на тренировке (?voice=workout)
+        const withParam = (param) => { try { const u = new URL(appUrl); u.searchParams.set("voice", param); return u.toString(); } catch { return appUrl; } };
+        const intentButton = result.intent === "startWorkout" ? { text: "🏋️ Начать тренировку", web_app: { url: withParam("workout") } }
+          : result.intent === "startRun" ? { text: "🏃 Начать пробежку", web_app: { url: withParam("run") } } : null;
+        await send(chatId, esc(result.summary), intentButton ? [[intentButton], [openButton]] : [[openButton]]);
+      }
       else await send(chatId, esc(result.message || "Не получилось записать. Попробуй ещё раз или открой приложение."), [[openButton], [supportButton]]);
     }
   } catch (err) {

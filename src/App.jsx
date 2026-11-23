@@ -1910,6 +1910,14 @@ const DEFAULT_REMINDERS = {
   sent: {},
 };
 
+// «17:00» минус 15 минут → «16:45»; через полночь не переносим
+function timeMinusLabel(time, minutes) {
+  if (!time || !/^\d{2}:\d{2}$/.test(time) || !(minutes > 0)) return null;
+  const [h, m] = time.split(":").map(Number);
+  const total = h * 60 + m - minutes;
+  return total < 0 ? null : `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+}
+
 function reminderTimeReached(time, now = new Date()) {
   if (!time || !/^\d{2}:\d{2}$/.test(time)) return false;
   const [h, m] = time.split(":").map(Number);
@@ -2014,6 +2022,10 @@ const DEFAULT = {
   schedule: null, products: {}, foodMemory: {}, todayLayout: null,
   runLog: {},
   voiceLogs: {},
+  // «Начни тренировку» голосом (netlify/lib/voice-log.mjs): сервер оставляет намерение, приложение
+  // при открытии запускает тренировку и запоминает в voiceIntentDone, что это намерение уже выполнено
+  voiceIntent: null,
+  voiceIntentDone: 0,
   // Что из своего прогресса показывать друзьям (см. раздел «Друзья») — каждый пункт включает
   // свою категорию статистики в карточку, которую видят только подтверждённые друзья. Вес —
   // единственное, что по умолчанию выключено: это более личные данные, чем серия тренировок.
@@ -2605,6 +2617,13 @@ function mergeStates(a, b) {
   }
   for (const k of ["sleep", "wellbeing", "weight", "water", "steps"]) out[k] = { ...(older[k] || {}), ...(newer[k] || {}) };
   for (const k of ["done", "runDone", "breathLog"]) out[k] = mergeLogs(older[k], newer[k]);
+  // Намерение из голосовой команды: побеждает более позднее по времени, а не по устройству;
+  // отметка «выполнено» не откатывается назад — иначе тренировка запускалась бы повторно
+  {
+    const ia = older.voiceIntent, ib = newer.voiceIntent;
+    out.voiceIntent = (ia?.at || 0) > (ib?.at || 0) ? ia : (ib || ia || null);
+    out.voiceIntentDone = Math.max(Number(older.voiceIntentDone) || 0, Number(newer.voiceIntentDone) || 0);
+  }
   out.runLog = { ...(older.runLog || {}) };
   for (const [d, v] of Object.entries(newer.runLog || {})) out.runLog[d] = { ...(out.runLog[d] || {}), ...(v || {}) };
   out.habits = mergeLogged(older.habits, newer.habits);
@@ -3495,6 +3514,38 @@ function Today({ T, st, up, program, run, week, go, name, streak, norm, onPhoto,
               {newDaily && <RecurrenceEditor T={T} value={newRepeat} onChange={setNewRepeat} date={now} />}
             </>
           ),
+          // Записи дневника за сегодня — сюда же попадает «запиши в дневник …» голосом или боту
+          journal: (() => {
+            const todayEntries = (st.journal || []).filter((e) => e.date === k).sort((a, b) => b.createdAt - a.createdAt);
+            return (
+              <>
+                <H2 right={<button onClick={() => go("journal")} style={{ color: MUTED, fontSize: 13 }}>Весь дневник</button>}>Дневник</H2>
+                {todayEntries.length === 0 ? (
+                  <Card T={T} onClick={() => go("journal")} className="flex items-center gap-3" style={{ padding: "12px 16px" }}>
+                    <NotebookPen size={18} color={MUTED} />
+                    <Muted size={13}>Сегодня записей нет. Скажи боту или кнопкой действия: «запиши в дневник: …»</Muted>
+                  </Card>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {todayEntries.slice(0, 3).map((e) => {
+                      const d = new Date(e.createdAt);
+                      return (
+                        <Card key={e.id} T={T} onClick={() => go("journal")} style={{ padding: "12px 16px" }}>
+                          <div className="flex items-center gap-2">
+                            <Muted size={11}>{pad(d.getHours())}:{pad(d.getMinutes())}</Muted>
+                            {e.source === "voice" && <Mic size={11} color={MUTED} />}
+                            {e.mood ? <span style={{ fontSize: 13 }}>{MOODS[e.mood - 1]}</span> : null}
+                          </div>
+                          <div className="mt-1" style={{ whiteSpace: "pre-wrap", lineHeight: 1.45, fontSize: 14, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{e.text}</div>
+                        </Card>
+                      );
+                    })}
+                    {todayEntries.length > 3 && <Muted size={12}>Ещё {todayEntries.length - 3} — в разделе «Дневник»</Muted>}
+                  </div>
+                )}
+              </>
+            );
+          })(),
         };
         const visible = layout.order.filter((id) => !layout.hidden.has(id) && blocks[id]);
         return visible.map((id) => <div key={id} className="mt-4">{blocks[id]}</div>);
@@ -9340,7 +9391,7 @@ function migrateState(st) {
   const hasOld = old && (Object.keys(old.strength || {}).length || Object.keys(old.run || {}).length);
   if (st.schedule || !hasOld || !st.profile) {
     const { customSchedule, ...rest } = st;
-    return { ...rest, reminders: { ...DEFAULT_REMINDERS, ...(rest.reminders || {}) }, taskLists: rest.taskLists?.length ? rest.taskLists : DEFAULT.taskLists, books: rest.books || [], challenges: rest.challenges || [], journal: rest.journal || [], breathLog: rest.breathLog || {}, breathStats: rest.breathStats || DEFAULT.breathStats, faith: rest.faith || DEFAULT.faith, shoppingList: rest.shoppingList || { recipes: [], checked: {}, custom: [] }, runLog: rest.runLog || {}, voiceLogs: rest.voiceLogs || {}, healthKit: rest.healthKit || { connected: false, lastSyncAt: 0 }, tabsConfig: migrateTabs(rest), tourSeen: rest.tourSeen ?? !!rest.profile, chargeRevealed: true, tabsOrderComplete: true };
+    return { ...rest, reminders: { ...DEFAULT_REMINDERS, ...(rest.reminders || {}) }, taskLists: rest.taskLists?.length ? rest.taskLists : DEFAULT.taskLists, books: rest.books || [], challenges: rest.challenges || [], journal: rest.journal || [], breathLog: rest.breathLog || {}, breathStats: rest.breathStats || DEFAULT.breathStats, faith: rest.faith || DEFAULT.faith, shoppingList: rest.shoppingList || { recipes: [], checked: {}, custom: [] }, runLog: rest.runLog || {}, voiceLogs: rest.voiceLogs || {}, voiceIntent: rest.voiceIntent || null, voiceIntentDone: Number(rest.voiceIntentDone) || 0, healthKit: rest.healthKit || { connected: false, lastSyncAt: 0 }, tabsConfig: migrateTabs(rest), tourSeen: rest.tourSeen ?? !!rest.profile, chargeRevealed: true, tabsOrderComplete: true };
   }
   const order = runLevel(st.profile) === 0 ? ["walkrun", "recovery", "longwalk"] : ["recovery", "hard", "walkrun", "long"];
   const runDays = Object.keys(old.run || {}).map(Number).sort((a, b) => a - b);
@@ -9354,7 +9405,7 @@ function migrateState(st) {
     };
   }
   const { customSchedule, ...rest } = st;
-  return { ...rest, schedule, reminders: { ...DEFAULT_REMINDERS, ...(rest.reminders || {}) }, taskLists: rest.taskLists?.length ? rest.taskLists : DEFAULT.taskLists, books: rest.books || [], challenges: rest.challenges || [], journal: rest.journal || [], breathLog: rest.breathLog || {}, breathStats: rest.breathStats || DEFAULT.breathStats, faith: rest.faith || DEFAULT.faith, shoppingList: rest.shoppingList || { recipes: [], checked: {}, custom: [] }, runLog: rest.runLog || {}, voiceLogs: rest.voiceLogs || {}, healthKit: rest.healthKit || { connected: false, lastSyncAt: 0 }, tabsConfig: migrateTabs(rest), tourSeen: rest.tourSeen ?? !!rest.profile, chargeRevealed: true, tabsOrderComplete: true };
+  return { ...rest, schedule, reminders: { ...DEFAULT_REMINDERS, ...(rest.reminders || {}) }, taskLists: rest.taskLists?.length ? rest.taskLists : DEFAULT.taskLists, books: rest.books || [], challenges: rest.challenges || [], journal: rest.journal || [], breathLog: rest.breathLog || {}, breathStats: rest.breathStats || DEFAULT.breathStats, faith: rest.faith || DEFAULT.faith, shoppingList: rest.shoppingList || { recipes: [], checked: {}, custom: [] }, runLog: rest.runLog || {}, voiceLogs: rest.voiceLogs || {}, voiceIntent: rest.voiceIntent || null, voiceIntentDone: Number(rest.voiceIntentDone) || 0, healthKit: rest.healthKit || { connected: false, lastSyncAt: 0 }, tabsConfig: migrateTabs(rest), tourSeen: rest.tourSeen ?? !!rest.profile, chargeRevealed: true, tabsOrderComplete: true };
 }
 
 /* ============ Голосовой помощник ============
@@ -10128,8 +10179,8 @@ function VoiceInputSettings({ T }) {
         <div className="flex items-start gap-3 mb-3">
           <div className="rounded-xl p-2" style={{ background: T.card, border: `1px solid ${T.line}` }}><Mic size={18} /></div>
           <div className="flex-1">
-            <div className="font-semibold">Диктовка в дневник</div>
-            <Muted size={12}>Скажи «съел банан, сделал тренировку, пробежал 10 км» — RITM разнесёт запись по разделам. С iPhone: кнопка действия → Быстрые команды, либо просто напиши это боту в Telegram.</Muted>
+            <div className="font-semibold">Голосовое управление</div>
+            <Muted size={12}>Скажи «съел банан, выпил 2 стакана воды», «начни тренировку», «запиши в дневник: сегодня в 17:00 встреча», «выполнил все задачи» — RITM разнесёт по разделам: питание, вода, тренировки, бег, задачи и встречи с напоминанием, привычки, дневник, покупки, дыхание, книги. С iPhone: кнопка действия → Быстрые команды, либо просто напиши это боту в Telegram.</Muted>
           </div>
         </div>
         {!canManage ? (
@@ -11553,6 +11604,7 @@ const TODAY_BLOCKS_ALL = [
   ["food", "Питание", "Калории и быстрое фото еды", Apple],
   ["habits", "Привычки", "Трекер привычек", Repeat],
   ["tasks", "Задачи на сегодня", "Список и добавление задач", ListFilter],
+  ["journal", "Дневник", "Записи за сегодня, в том числе голосом", NotebookPen],
 ];
 const DEFAULT_TODAY_LAYOUT = { order: TODAY_BLOCKS_ALL.map((b) => b[0]), hidden: [] };
 const MIN_VISIBLE_TODAY_BLOCKS = 1;
@@ -11783,7 +11835,13 @@ export default function App() {
         if (name) trainingByDay[String(d)] = name;
       }
       const tasks = [];
-      Object.entries(st.tasks || {}).forEach(([date, list]) => (Array.isArray(list) ? list : []).forEach(t => tasks.push({ id:`${date}:${t.id}`, text:String(t.text || ""), time:t.time || null, repeat:t.repeat || {type:"once", date}, done:!!t.done, log:t.log || {} })));
+      Object.entries(st.tasks || {}).forEach(([date, list]) => (Array.isArray(list) ? list : []).forEach(t => {
+        const entry = { id:`${date}:${t.id}`, text:String(t.text || ""), time:t.time || null, repeat:t.repeat || {type:"once", date}, done:!!t.done, log:t.log || {} };
+        tasks.push(entry);
+        // Встреча, добавленная голосом: второе напоминание за remindBefore минут (как в netlify/lib/reminder-push.mjs)
+        const pre = t.time && t.remindBefore ? timeMinusLabel(t.time, t.remindBefore) : null;
+        if (pre) tasks.push({ ...entry, id:`${entry.id}:pre`, time:pre, text:`Через ${t.remindBefore} мин: ${entry.text}` });
+      }));
       (st.dailyTasks || []).forEach(t => tasks.push({ id:String(t.id), text:String(t.text || ""), time:t.time || null, repeat:t.repeat || {type:"daily"}, done:!!t.done, log:t.log || {} }));
       if (initData) {
         const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Moscow"; } catch { return "Europe/Moscow"; } })();
@@ -11897,6 +11955,53 @@ export default function App() {
   const view = lifetimePro || serverPro.active || isStandalone() ? { ...st, pro: true } : st;
   const todayFood = sumFood(st.food[todayKey] || []);
   const leftToday = norm ? { kcal: norm.kcal - todayFood.kcal, p: norm.protein - todayFood.p } : null;
+
+  // Голосовые «начни тренировку» / «начни пробежку» (netlify/lib/voice-log.mjs). Два пути:
+  // 1) параметр запуска — кнопка бота открывает Mini App с ?voice=workout, ссылка t.me/…?startapp=workout;
+  // 2) намерение st.voiceIntent, которое сервер записал в данные: подхватываем при открытии или после
+  //    синхронизации, если оно сегодняшнее и не старше 6 часов. Выполненное помечаем в voiceIntentDone.
+  const voiceParamRef = useRef(null);
+  const voiceParamAtRef = useRef(0);
+  if (voiceParamRef.current === null) {
+    let p = "";
+    try {
+      const q = new URLSearchParams(window.location.search);
+      p = tg?.initDataUnsafe?.start_param || q.get("voice") || q.get("tgWebAppStartParam") || "";
+    } catch (e) { /* без параметра */ }
+    voiceParamRef.current = String(p || "").toLowerCase();
+  }
+  const launchVoiceAction = (action) => {
+    if (action === "startRun") { setTab("run"); return; }
+    if (action !== "startWorkout") return;
+    setTab("train");
+    if (st.done?.[todayKey] || !program) return;
+    const w = wdOf(new Date());
+    const own = (st.workouts || []).find((x) => x.id === program.customDays?.[w]);
+    if (own) { setSheet({ type: "session", dayTitle: own.name, items: own.items.map((it) => resolveWorkoutItem(it, st.profile, st.exLog)), range: null }); return; }
+    const day = program.days?.[program.schedule?.[w] ?? 0];
+    if (day) setSheet({ type: "session", dayTitle: day.title, items: day.list, range: program.range });
+  };
+  useEffect(() => {
+    if (!loaded || !st.profile || !program || sheet) return;
+    const vi = st.voiceIntent;
+    const pending = !!(vi?.at && vi.at > (Number(st.voiceIntentDone) || 0));
+    const param = voiceParamRef.current;
+    if (param) {
+      voiceParamRef.current = "";
+      voiceParamAtRef.current = Date.now();
+      if (param === "workout") launchVoiceAction("startWorkout");
+      else if (param === "run") launchVoiceAction("startRun");
+      else if (param === "settings" || TABS_ALL.some(([id]) => id === param)) setTab(param);
+      if (pending) up({ voiceIntentDone: vi.at });
+      return;
+    }
+    if (!pending) return;
+    up({ voiceIntentDone: vi.at });
+    // Уже открыли по ссылке с параметром — то же намерение, пришедшее синхронизацией, не запускаем второй раз
+    if (voiceParamAtRef.current && vi.at <= voiceParamAtRef.current) return;
+    if (vi.date !== todayKey || Date.now() - vi.at > 6 * 3600e3) return;
+    launchVoiceAction(vi.action);
+  }, [loaded, !!st.profile, !!program, st.voiceIntent?.at, st.voiceIntentDone, !!sheet]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addFood = (e) => {
     const k = keyOf(new Date());
