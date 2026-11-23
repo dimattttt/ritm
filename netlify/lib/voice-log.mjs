@@ -25,7 +25,7 @@ export const VOICE_PARSE_PROMPT = `Ты — модуль голосового у
   "steps": число или null,
   "sleep": {"hours": число, "quality": 1},
   "wellbeing": {"energy": 3, "mood": 3, "soreness": 3, "note": ""},
-  "tasks": [{"text": "текст задачи или встречи", "time": "17:00" или null, "date": "ГГГГ-ММ-ДД" или null, "remindBefore": минут или null, "durationMinutes": минут или null}],
+  "tasks": [{"text": "текст задачи или встречи", "time": "17:00" или null, "date": "ГГГГ-ММ-ДД" или null, "timeEnd": "18:00" или null, "remindBefore": минут или null, "durationMinutes": минут или null, "kind": "task" или "meeting"}],
   "completeAllTasks": true,
   "completeAllHabits": true,
   "tasksDone": ["часть названия выполненной задачи"],
@@ -44,7 +44,8 @@ export const VOICE_PARSE_PROMPT = `Ты — модуль голосового у
 - run: если УЖЕ пробежал (или указал километры бега). km и minutes — только если названы. «Пробежал 10 км» → {"km": 10, "minutes": null}. startRun: true, если просит начать пробежку.
 - weightKg, steps, sleep.hours, sleep.quality (1–5, 5 лучше) — только если явно сказаны.
 - wellbeing: энергия, настроение, мышечная боль по шкале 1–5, только если человек описал самочувствие.
-- tasks: новые дела, встречи, события, напоминания на будущее («в 17:00 встреча», «завтра позвонить маме», «напомни купить подарок»). time — «ЧЧ:ММ» в 24-часовом формате («в 5 вечера» = "17:00"), иначе null. date — дата «ГГГГ-ММ-ДД», если названа («завтра», «в пятницу»), иначе null (= сегодня). remindBefore — за сколько минут напомнить, только если человек сказал («напомни за полчаса» = 30), иначе null. durationMinutes — длительность, только если названа («встреча на полтора часа» = 90, «с 17 до 18:30» → time "17:00", durationMinutes 90), иначе null. text — коротко, без времени и даты («Встреча», «Позвонить маме»).
+- tasks: новые задачи на день, дела, встречи, события, напоминания на будущее. «Добавь задачу сделать домашку» → {"text": "Сделать домашку", "time": null, "kind": "task"}. «Завтра с 15 до 16 сборная» → {"text": "Сборная", "date": завтра, "time": "15:00", "timeEnd": "16:00", "kind": "task"}. «В 17:00 встреча с Петей» → kind "meeting". kind "meeting" — встречи, созвоны, приёмы у врача, мероприятия с людьми; всё остальное — "task". timeEnd — время окончания, если названо («с 15 до 16», «до 18:30»), иначе null.
+- Подробнее про tasks: («в 17:00 встреча», «завтра позвонить маме», «напомни купить подарок»). time — «ЧЧ:ММ» в 24-часовом формате («в 5 вечера» = "17:00"), иначе null. date — дата «ГГГГ-ММ-ДД», если названа («завтра», «в пятницу»), иначе null (= сегодня). remindBefore — за сколько минут напомнить, только если человек сказал («напомни за полчаса» = 30), иначе null. durationMinutes — длительность, только если названа («встреча на полтора часа» = 90, «с 17 до 18:30» → time "17:00", durationMinutes 90), иначе null. text — коротко, без времени и даты («Встреча», «Позвонить маме»).
 - completeAllTasks: true на «выполнил все задачи», «сделал все дела», «закрыл все задачи». completeAllHabits: true на «выполнил все привычки». «Сделал всё запланированное / всё на сегодня» — оба true.
 - tasksDone / habitsDone: если отметил конкретные дела или привычки («сделал растяжку», «прочитал 10 минут», «позвонил маме»). Используй слова из списков ниже, если они подходят.
 - journal: дневник — свободная заметка, мысль, итог дня, настроение, а также всё, что человек просит «записать в дневник». mood 1–5 или null. Если человек просит записать в дневник встречу или дело со временем — сохрани текст в journal И добавь событие в tasks. Не дублируй в дневник еду и километры, если они уже разобраны.
@@ -257,8 +258,14 @@ export function validateVoicePatch(raw, { hour = 12, dateKey = null } = {}) {
       if (date && dateKey && (date < addDaysKey(dateKey, -1) || date > addDaysKey(dateKey, 366))) date = null;
       const rb = t && typeof t === "object" ? int(t.remindBefore, 0, 24 * 60) : null;
       const remindBefore = time ? (rb != null ? rb : DEFAULT_REMIND_BEFORE) : 0;
-      const durationMinutes = time && t && typeof t === "object" ? int(t.durationMinutes, 5, 24 * 60) : null;
-      return { text, time, date, remindBefore, durationMinutes };
+      let durationMinutes = time && t && typeof t === "object" ? int(t.durationMinutes, 5, 24 * 60) : null;
+      const timeEnd = time && t && typeof t === "object" ? normTime(t.timeEnd) : null;
+      if (timeEnd && timeEnd > time) {
+        const [h1, m1] = time.split(":").map(Number), [h2, m2] = timeEnd.split(":").map(Number);
+        durationMinutes = (h2 * 60 + m2) - (h1 * 60 + m1);
+      }
+      const kind = t && typeof t === "object" && t.kind === "task" ? "task" : (time ? "meeting" : "task");
+      return { text, time, date, remindBefore, durationMinutes, kind };
     })
     .filter(Boolean)
     .slice(0, 5);
@@ -413,7 +420,7 @@ export function applyVoicePatchDetailed(state, patch, { dateKey, now = Date.now(
       if (t.time && t.remindBefore) task.remindBefore = t.remindBefore;
       // Встреча со временем — событие в Календаре RITM (экран «Календарь»): конец, если назвали длительность
       if (t.time) {
-        task.event = true;
+        if (t.kind !== "task") task.event = true; // значок «встреча» и синяя точка; обычная задача со временем — без них
         // Как карточки «06:00–07:00» в Календаре: без названной длительности — 1 час (до полуночи)
         const end = timeMinus(t.time, -(t.durationMinutes || 60)) || (t.time < "23:59" ? "23:59" : null);
         if (end && end > t.time) task.timeEnd = end;

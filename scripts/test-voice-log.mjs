@@ -273,6 +273,28 @@ console.log("15. события для Календаря iPhone (поля от�
   check("переход на летнее время", dst.start === "2026-03-29T01:30:00+01:00" && dst.end === "2026-03-29T04:00:00+02:00", JSON.stringify(dst));
 }
 
+console.log("16. новая задача на день — обычной карточкой в Календаре (tasks[дата])");
+{
+  const base = { tasks: { "2026-11-24": [{ id: 5, text: "Школа", time: "08:00", timeEnd: "17:00", done: false, priority: 0, listId: "inbox" }] } };
+  const a = await runWith('{"tasks": [{"text": "Сделать домашку", "time": null, "kind": "task"}]}', { state: base, text: "добавь задачу сделать домашку" });
+  const hw = a.state.tasks["2026-11-23"]?.[0];
+  check("«добавь задачу сделать домашку» → сегодня, без времени", hw && hw.text === "Сделать домашку" && hw.time === null && hw.done === false && hw.listId === "inbox" && !hw.timeEnd && !hw.event, JSON.stringify(a.state.tasks));
+  check("без времени — нет события для iPhone и напоминания боту", a.res.events.length === 0);
+  check("сводка", /📅 Календарь RITM: Сделать домашку/.test(a.res.summary), a.res.summary);
+
+  const pushed = [];
+  const b = await runWith('{"tasks": [{"text": "Сборная", "date": "2026-11-24", "time": "15", "timeEnd": "16", "kind": "task"}]}', { state: base, text: "завтра с 15 до 16 сборная", onTasksAdded: async (p) => pushed.push(p) });
+  const day = b.state.tasks["2026-11-24"];
+  const sb = day.find((x) => x.text === "Сборная");
+  check("старая карточка «Школа» на месте", day[0].text === "Школа" && day.length === 2);
+  check("«завтра с 15 до 16 сборная» → 15:00–16:00 на завтра", sb && sb.time === "15:00" && sb.timeEnd === "16:00" && sb.done === false, JSON.stringify(sb));
+  check("обычная задача — без значка «встреча»", sb && !sb.event);
+  check("напоминание боту и событие iPhone 15:00–16:00", pushed.length === 1 && b.res.events[0].start === "2026-11-24T15:00:00+03:00" && b.res.events[0].end === "2026-11-24T16:00:00+03:00");
+  check("сводка «завтра 15:00–16:00»", /Сборная завтра 15:00–16:00/.test(b.res.summary), b.res.summary);
+  const back = validateVoicePatch({ tasks: [{ text: "x", time: "16:00", timeEnd: "15:00" }] }, { dateKey: "2026-11-23" });
+  check("конец раньше начала — игнорируем, 1 час", back.tasks[0].durationMinutes === null);
+}
+
 if (failed) {
   console.error(`\nПровалено проверок: ${failed}`);
   process.exit(1);
