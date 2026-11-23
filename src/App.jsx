@@ -26,6 +26,7 @@ import {
 } from "./plans.js";
 import { CountUp, observeReveal } from "./motion.jsx";
 import { goal, goalOnce } from "./analytics.js";
+import { speechErrorMessage } from "./voiceAssistant.js";
 import { STORES, BASKET_PRODUCTS, BASKET_MODES, BASKET_PRICES_NOTE, storeById, buildBasket, amountLabel, weightHint, storeSiteUrl, productSearchUrl } from "./basket.js";
 import {
   NEAR_RADII, readSavedLocation, saveLocation, getLocation, openLocationSettings, distLabel, walkLabel, kmLabel,
@@ -9421,27 +9422,33 @@ function VoiceAssistant({ T, st, up, norm, program, run, onPay }) {
   const [error, setError] = useState("");
   const [typed, setTyped] = useState("");
   const recRef = useRef(null);
+  const requestRef = useRef(false);
   const k = keyOf(new Date());
   const used = Number(st.assistantUses?.[k]) || 0;
   const left = st.pro ? null : Math.max(0, FREE_ASSISTANT - used);
 
   const ask = async (q) => {
     const text = q.trim();
-    if (!text) return;
+    if (!text || requestRef.current) return;
     if (left === 0) { onPay("assistant"); return; }
+    requestRef.current = true;
     setQuestion(text);
     setAnswer("");
     setError("");
     setStatus("thinking");
-    up((s) => ({ assistantUses: { ...s.assistantUses, [k]: (Number(s.assistantUses?.[k]) || 0) + 1 } }));
     try {
       const a = await askAssistantText(text, assistantContext(st, norm, program, run));
       setAnswer(a);
       setStatus("idle");
+      // Не списываем вопрос за временную ошибку сети/сервера — человек сможет повторить.
+      up((s) => ({ assistantUses: { ...s.assistantUses, [k]: (Number(s.assistantUses?.[k]) || 0) + 1 } }));
       speak(a);
     } catch (e) {
+      setTyped(text);
       setError(explainAiError(e) || "Не получилось получить ответ. Попробуй ещё раз.");
       setStatus("error");
+    } finally {
+      requestRef.current = false;
     }
   };
 
@@ -9454,13 +9461,24 @@ function VoiceAssistant({ T, st, up, norm, program, run, onPay }) {
     rec.interimResults = false;
     rec.maxAlternatives = 1;
     rec.onresult = (e) => { const said = e.results?.[0]?.[0]?.transcript || ""; if (said) ask(said); };
-    rec.onerror = () => { setListening(false); setError("Не расслышал. Попробуй ещё раз или напиши вопрос текстом."); setStatus("error"); };
+    rec.onerror = (e) => {
+      setListening(false);
+      const message = speechErrorMessage(e?.error);
+      if (!message) return;
+      setError(message);
+      setStatus("error");
+    };
     rec.onend = () => setListening(false);
     setError("");
     setListening(true);
     try { rec.start(); } catch (e) { setListening(false); }
   };
   const stopListening = () => { try { recRef.current?.stop(); } catch (e) { /* уже остановлен */ } setListening(false); };
+
+  useEffect(() => () => {
+    try { recRef.current?.abort?.(); } catch (e) { /* распознавание уже завершено */ }
+    try { window.speechSynthesis?.cancel(); } catch (e) { /* озвучка уже завершена */ }
+  }, []);
 
   const close = () => { stopListening(); try { window.speechSynthesis?.cancel(); } catch (e) { /* ок */ } setOpen(false); setQuestion(""); setAnswer(""); setError(""); setStatus("idle"); };
 
@@ -9486,8 +9504,8 @@ function VoiceAssistant({ T, st, up, norm, program, run, onPay }) {
 
       {canListen() ? (
         <div className="flex flex-col items-center py-4">
-          <button onClick={listening ? stopListening : startListening} disabled={left === 0}
-            className="rounded-full flex items-center justify-center mb-3" style={{ width: 84, height: 84, background: listening ? T.a : T.grad, color: T.on, boxShadow: T.glow, animation: listening ? "breathe 1.4s ease-in-out infinite" : "none" }}
+          <button onClick={listening ? stopListening : startListening} disabled={left === 0 || status === "thinking"}
+            className="rounded-full flex items-center justify-center mb-3" style={{ width: 84, height: 84, background: listening ? T.a : T.grad, color: T.on, boxShadow: T.glow, animation: listening ? "breathe 1.4s ease-in-out infinite" : "none", opacity: left === 0 || status === "thinking" ? 0.45 : 1 }}
             aria-label={listening ? "Остановить запись" : "Начать запись"}>
             {listening ? <MicOff size={30} /> : <Mic size={30} />}
           </button>
@@ -9498,11 +9516,11 @@ function VoiceAssistant({ T, st, up, norm, program, run, onPay }) {
       )}
 
       <div className="flex gap-2 mt-2">
-        <input value={typed} onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === "Enter" && (ask(typed), setTyped(""))}
+        <input value={typed} onChange={(e) => setTyped(e.target.value)} onKeyDown={(e) => e.key === "Enter" && status !== "thinking" && (ask(typed), setTyped(""))}
           placeholder="Или напиши вопрос" className="flex-1 rounded-xl px-4 py-3 bg-transparent outline-none"
-          style={{ border: `1px solid ${T.line}`, color: "#fff", fontSize: 15 }} disabled={left === 0} />
-        <button onClick={() => { ask(typed); setTyped(""); }} disabled={left === 0 || !typed.trim()} aria-label="Спросить"
-          className="rounded-xl px-4" style={{ background: T.grad, color: T.on, opacity: left === 0 || !typed.trim() ? 0.4 : 1 }}><Send size={18} /></button>
+          style={{ border: `1px solid ${T.line}`, color: "#fff", fontSize: 15 }} disabled={left === 0 || status === "thinking"} />
+        <button onClick={() => { ask(typed); setTyped(""); }} disabled={left === 0 || status === "thinking" || listening || !typed.trim()} aria-label="Спросить"
+          className="rounded-xl px-4" style={{ background: T.grad, color: T.on, opacity: left === 0 || status === "thinking" || listening || !typed.trim() ? 0.4 : 1 }}><Send size={18} /></button>
       </div>
 
       {!question && status !== "thinking" && (

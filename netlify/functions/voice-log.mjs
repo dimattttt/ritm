@@ -23,6 +23,33 @@ async function authVoice(req) {
   return authUser(req);
 }
 
+// Быстрые команды иногда присылают значение не строкой (массив, словарь) или телом формы.
+function flatten(v) {
+  if (v == null) return "";
+  if (typeof v === "string" || typeof v === "number") return String(v);
+  if (Array.isArray(v)) return v.map(flatten).filter(Boolean).join(" ");
+  if (typeof v === "object") return flatten(v.text ?? v.string ?? v.value ?? Object.values(v));
+  return "";
+}
+function pickText(body) {
+  if (!body || typeof body !== "object") return "";
+  for (const k of ["text", "текст", "Text", "query", "message"]) {
+    const t = flatten(body[k]).trim();
+    if (t) return t;
+  }
+  return "";
+}
+async function readBody(req) {
+  const ctype = req.headers.get("content-type") || "";
+  const raw = await req.text().catch(() => "");
+  let body = null;
+  try { body = JSON.parse(raw); } catch {
+    if (/form-urlencoded/i.test(ctype)) body = Object.fromEntries(new URLSearchParams(raw));
+  }
+  if (typeof body === "string") return { body: null, raw: body, ctype };
+  return { body, raw: raw.trim(), ctype };
+}
+
 export default async (req) => {
   if (req.method === "OPTIONS") return corsPreflight();
   if (req.method !== "POST") return json({ error: "method" }, 405);
@@ -30,9 +57,18 @@ export default async (req) => {
   const auth = await authVoice(req);
   if (!auth.ok) return json({ error: auth.code }, auth.status);
 
-  const body = await req.json().catch(() => null);
-  const text = body?.text;
-  const tz = body?.tz || DEFAULT_TZ;
+  const { body, raw, ctype } = await readBody(req);
+  const url = new URL(req.url);
+  const text = pickText(body) || url.searchParams.get("text") || (body ? "" : raw);
+  const tz = (typeof body?.tz === "string" && body.tz.trim()) || url.searchParams.get("tz") || DEFAULT_TZ;
+  if (!String(text || "").trim()) {
+    return json({
+      ok: false,
+      error: "bad_text",
+      message: "Пустая запись: сервер не получил текст. Проверь, что в поле text стоит «Продиктованный текст».",
+      debug: { contentType: ctype, keys: body && typeof body === "object" ? Object.keys(body) : [], textType: body ? typeof body.text : null, rawLength: raw.length },
+    }, 400);
+  }
   const pro = await getPro(auth.user.id).catch(() => ({ active: false }));
 
   const result = await runVoiceLog({
