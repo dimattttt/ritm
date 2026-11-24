@@ -2033,6 +2033,9 @@ const DEFAULT = {
   // при открытии запускает тренировку и запоминает в voiceIntentDone, что это намерение уже выполнено
   voiceIntent: null,
   voiceIntentDone: 0,
+  // Цели на день для виджета iPhone (/api/widget): норма КБЖУ и воды и тренировки по дням недели.
+  // Сервер не умеет строить программу тренировок, поэтому приложение кладёт сюда готовые цифры.
+  widgetGoals: null,
   // Что из своего прогресса показывать друзьям (см. раздел «Друзья») — каждый пункт включает
   // свою категорию статистики в карточку, которую видят только подтверждённые друзья. Вес —
   // единственное, что по умолчанию выключено: это более личные данные, чем серия тренировок.
@@ -10239,6 +10242,7 @@ function VoiceInputSettings({ T, pro = false }) {
               <Primary T={T} onClick={() => act("POST")} disabled={busy}>{meta?.hasToken ? "Создать новый токен" : "Создать токен"}</Primary>
               {meta?.hasToken && <Ghost T={T} onClick={() => { if (window.confirm("Старый токен перестанет работать в Быстрых командах. Продолжить?")) act("DELETE"); }} disabled={busy}>Отозвать токен</Ghost>}
               <Ghost T={T} onClick={() => openExternalLink(`${typeof window !== "undefined" && window.location?.origin ? window.location.origin : "https://ritmru.ru"}/SHORTCUT_SETUP.md`)}>Как настроить Быстрые команды</Ghost>
+              <Ghost T={T} onClick={() => openExternalLink(`${typeof window !== "undefined" && window.location?.origin ? window.location.origin : "https://ritmru.ru"}/WIDGET_SETUP.md`)}>Виджет для iPhone</Ghost>
             </div>
           </>
         )}
@@ -12038,6 +12042,23 @@ export default function App() {
     if (vi.date !== todayKey || Date.now() - vi.at > 6 * 3600e3) return;
     launchVoiceAction(vi.action);
   }, [loaded, !!st.profile, !!program, st.voiceIntent?.at, st.voiceIntentDone, !!sheet]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Виджет iPhone (netlify/lib/widget-data.mjs): кладём в state цели дня и расписание тренировок.
+  // Пишем только когда цифры изменились, чтобы не гонять синхронизацию зря.
+  useEffect(() => {
+    if (!loaded || !st.profile || !norm) return;
+    const trainingByDay = {};
+    for (let d = 0; d < 7; d++) {
+      let name = "";
+      try { name = programForReminder(st, d)?.name || ""; } catch (e) { /* без программы */ }
+      if (!name && run && run.schedule[d] !== undefined) name = "Бег";
+      if (name) trainingByDay[String(d)] = name;
+    }
+    const next = { kcal: norm.kcal, protein: norm.protein, fat: norm.fat, carbs: norm.carbs, waterBase: norm.waterBase, waterTrain: norm.waterTrain, trainingByDay };
+    const cur = st.widgetGoals || {};
+    const same = ["kcal", "protein", "fat", "carbs", "waterBase", "waterTrain"].every((x) => cur[x] === next[x]) && JSON.stringify(cur.trainingByDay || {}) === JSON.stringify(trainingByDay);
+    if (!same) up({ widgetGoals: next });
+  }, [loaded, norm, run, st.schedule, st.workouts, st.profile]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const addFood = (e) => {
     const k = keyOf(new Date());

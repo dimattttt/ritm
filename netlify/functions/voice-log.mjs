@@ -2,8 +2,7 @@
 // Тело: { text, tz? }. Авторизация: initData Telegram, сессия сайта (Bearer v1.…),
 // или персональный токен Быстрых команд (Bearer ritm_sk_…).
 import { CORS_HEADERS, corsPreflight } from "../lib/telegram-auth.mjs";
-import { authUser, verifySession } from "../lib/auth.mjs";
-import { verifyShortcutToken } from "../lib/voice-token.mjs";
+import { authVoice } from "../lib/voice-auth.mjs";
 import { completeAiText } from "../lib/ai-chat.mjs";
 import { loadUserState, saveUserState } from "../lib/voice-store.mjs";
 import { runVoiceLog, DEFAULT_TZ, calendarFields, FREE_VOICE_LOGS } from "../lib/voice-log.mjs";
@@ -16,17 +15,6 @@ const appLink = (param) => `https://t.me/${String(envGet("BOT_USERNAME") || "rit
 
 const json = (data, status = 200) => Response.json(data, { status, headers: { ...CORS_HEADERS, "Cache-Control": "no-store" } });
 
-async function authVoice(req) {
-  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.get("authorization") || "");
-  if (bearer) {
-    const session = verifySession(bearer[1].trim());
-    if (session) return { ok: true, user: session, via: "web" };
-    const sc = await verifyShortcutToken(bearer[1].trim());
-    if (sc) return { ok: true, user: { id: sc.id, first_name: "", username: "" }, via: "shortcut" };
-    return { ok: false, code: "session_invalid", status: 401 };
-  }
-  return authUser(req);
-}
 
 // Быстрые команды иногда присылают значение не строкой (массив, словарь) или телом формы.
 function flatten(v) {
