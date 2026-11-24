@@ -53,6 +53,40 @@ export function streakFor(st, todayKey) {
   return n;
 }
 
+const WD_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const sumKcal = (list) => (Array.isArray(list) ? list : []).reduce((n, e) => n + (Number(e?.kcal) || 0), 0);
+function dayTasks(st, key) {
+  const once = Array.isArray(st.tasks?.[key]) ? st.tasks[key] : [];
+  const daily = (st.dailyTasks || []).filter((t) => occursOnKey(t, key));
+  const all = [...once.map((t) => !!t?.done), ...daily.map((t) => !!t?.log?.[key])];
+  return { done: all.filter(Boolean).length, total: all.length };
+}
+
+// Последние 7 дней (сегодня — последний) для графиков виджета
+export function historyFor(st, todayKey, goals, trainingByDay = null) {
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const key = addDays(todayKey, -i);
+    const w = weekdayOfKey(key);
+    const planned = trainingByDay ? !!trainingByDay[String(w)] : false;
+    const t = dayTasks(st, key);
+    out.push({
+      date: key,
+      wd: WD_SHORT[w],
+      today: i === 0,
+      kcal: Math.round(sumKcal(st.food?.[key])),
+      kcalGoal: goals?.kcal || null,
+      waterMl: Math.max(0, Math.round(Number(st.water?.[key]) || 0)),
+      waterGoal: goals ? (planned ? goals.waterTrain : goals.waterBase) || null : null,
+      trained: !!(st.done?.[key] || st.runDone?.[key]),
+      planned,
+      tasksDone: t.done,
+      tasksTotal: t.total,
+    });
+  }
+  return out;
+}
+
 const validTime = (t) => (typeof t === "string" && /^\d{2}:\d{2}$/.test(t) ? t : null);
 
 export function buildWidgetData(state, { now = new Date(), tz = DEFAULT_TZ, updatedAt = null, botUsername = "ritmrubot" } = {}) {
@@ -119,6 +153,7 @@ export function buildWidgetData(state, { now = new Date(), tz = DEFAULT_TZ, upda
     nextEvent,
     habits: { done: habits.filter((h) => h?.log?.[k]).length, total: habits.length },
     streak: streakFor(st, k),
+    history: historyFor(st, k, goals, wg?.trainingByDay || null),
     updatedAt: Number(updatedAt || st.updatedAt) || null,
     openUrl: `https://t.me/${botUsername}?startapp=today`,
   };

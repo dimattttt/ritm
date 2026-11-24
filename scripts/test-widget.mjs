@@ -78,6 +78,20 @@ const empty = buildWidgetData({}, { now: NOW });
 check("пустой state не падает", empty.ok && empty.food.kcalGoal === null && empty.tasks.total === 0 && empty.streak === 0 && empty.nextEvent === null);
 check("streakFor: сегодня пусто → считаем со вчера", streakFor({ done: { "2026-11-23": true } }, D) === 1);
 
+console.log("1b. история за 7 дней для графиков");
+{
+  const wg = { kcal: 2500, protein: 150, fat: 80, carbs: 290, waterBase: 2600, waterTrain: 3100, trainingByDay: { "1": "Тренировка A", "3": "Бег" } };
+  const h = buildWidgetData({ ...state, widgetGoals: wg }, { now: NOW }).history;
+  check("7 дней, последний — сегодня", h.length === 7 && h[6].date === D && h[6].today && !h[5].today && h[0].date === "2026-11-18", JSON.stringify(h.map((x) => x.date)));
+  check("подписи дней недели", h.map((x) => x.wd).join() === "Ср,Чт,Пт,Сб,Вс,Пн,Вт");
+  check("ккал по дням (вчера 999, сегодня 437)", h[5].kcal === 999 && h[6].kcal === 437 && h[6].kcalGoal === 2500);
+  check("вода и норма воды по дню тренировки", h[6].waterMl === 750 && h[6].waterGoal === 3100 && h[5].waterGoal === 2600 && h[6].planned && !h[5].planned);
+  check("тренировки: 22, 23 силовые, сегодня бег", h[4].trained && h[5].trained && h[6].trained && !h[3].trained);
+  check("задачи за день: сегодня 2/6, вчера 0/2 (ежедневная + «по пн»)", h[6].tasksDone === 2 && h[6].tasksTotal === 6 && h[5].tasksTotal === 2 && h[5].tasksDone === 0, JSON.stringify(h.slice(5)));
+  const e = buildWidgetData({}, { now: NOW }).history;
+  check("пустой state → 7 нулевых дней", e.length === 7 && e.every((x) => x.kcal === 0 && x.kcalGoal === null && !x.trained));
+}
+
 console.log("2. /api/widget: авторизация и ответ");
 const req = (headers = {}, url = "https://ritmru.ru/api/widget?tz=Europe/Moscow", method = "GET") => new Request(url, { method, headers });
 const deps = {
@@ -94,6 +108,7 @@ check("без токена → 401", r.status === 401);
 r = await handleWidget(req({ authorization: "Bearer ritm_sk_good" }), deps);
 body = await r.json();
 check("свой токен → 200 и сводка", r.status === 200 && body.ok && body.food.kcal === 437 && body.tz === "Europe/Moscow", JSON.stringify(body).slice(0, 200));
+check("/api/widget отдаёт history за 7 дней", Array.isArray(body.history) && body.history.length === 7 && body.history[6].today);
 check("no-store и CORS", r.headers.get("cache-control") === "no-store" && !!r.headers.get("access-control-allow-origin"));
 r = await handleWidget(req({ authorization: "Bearer ritm_sk_good" }, "https://ritmru.ru/api/widget?tz=Nope/Zone"), { ...deps, reminderTz: async () => "Asia/Yekaterinburg" });
 check("кривой tz → пояс из напоминаний", (await r.json()).tz === "Asia/Yekaterinburg");
@@ -102,36 +117,69 @@ check("POST → 405 (только чтение)", r.status === 405);
 r = await handleWidget(req({ authorization: "Bearer ritm_sk_good" }), { ...deps, loadUserState: async () => null });
 check("нет данных → 404 no_data", r.status === 404 && (await r.json()).error === "no_data");
 
-console.log("3. скрипт Scriptable с подставным API");
+console.log("3. скрипт Scriptable с подставным API (строгий мок, без Rounded-шрифтов)");
 const src = fs.readFileSync(new URL("../public/ritm-widget.js", import.meta.url), "utf8");
-function makeEnv({ family = "medium", runsInApp = false, keychain = {}, param = null, respond, alertIndex = 0, alertText = "" }) {
-  const log = { texts: [], images: 0, widgets: [], fetched: [], presented: null, alerts: 0, setWidget: null, files: {} };
-  class Color { constructor(hex, a = 1) { this.hex = hex; this.a = a; } static dynamic(l, dk) { return { l, dk }; } static white() { return new Color("#FFFFFF"); } }
-  const Font = new Proxy({}, { get: () => (size) => ({ size }) });
-  class Size { constructor(w, h) { this.w = w; this.h = h; } }
-  class Point { constructor(x, y) { this.x = x; this.y = y; } }
-  class Rect { constructor(x, y, w, h) { Object.assign(this, { x, y, w, h }); } }
-  class Path { move() {} addLine() {} addRoundedRect() {} }
-  class DrawContext { addPath() {} setStrokeColor() {} setLineWidth() {} strokePath() {} setFillColor() {} fillPath() {} getImage() { log.images++; return { img: true }; } }
+check("в скрипте нет прямых вызовов Rounded-шрифтов (только через pickFont)", !/Font\.\w*Rounded\w*\s*\(/.test(src) && !/Font\[\s*["']\w*Rounded/.test(src));
+const FIXED_NOW = Date.parse("2026-11-24T12:30:00+03:00");
+function makeEnv({ family = "medium", runsInApp = false, keychain = {}, param = null, respond, alerts = [0], alertText = "", dark = true, now = FIXED_NOW, scale = 3 }) {
+  const log = { texts: [], drawTexts: [], images: 0, canvases: [], widgets: [], fetched: [], presented: [], alerts: 0, setWidget: null, files: {}, strokes: 0, fills: 0 };
+  const num = (v, what) => { if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${what}: не число (${v})`); return v; };
+  class Color {
+    constructor(hex, a = 1) { if (!/^#[0-9a-f]{6}$/i.test(String(hex))) throw new Error("плохой цвет " + hex); num(a, "alpha"); this.hex = hex; this.a = a; }
+    static white() { return new Color("#FFFFFF"); } static black() { return new Color("#000000"); }
+    static dynamic(l, d) { return { l, d }; }
+  }
+  // Только обычные системные шрифты — как на iPhone пользователя (без Rounded)
+  const mkFont = (name) => (size) => ({ name, size: num(size, "размер шрифта") });
+  const Font = { systemFont: mkFont("regular"), boldSystemFont: mkFont("bold"), semiboldSystemFont: mkFont("semibold"), heavySystemFont: mkFont("heavy"), mediumSystemFont: mkFont("medium") };
+  class Size { constructor(w, h) { this.width = num(w, "Size.w"); this.height = num(h, "Size.h"); } }
+  class Point { constructor(x, y) { this.x = num(x, "Point.x"); this.y = num(y, "Point.y"); } }
+  class Rect { constructor(x, y, w, h) { [x, y, w, h].forEach((v) => num(v, "Rect")); Object.assign(this, { x, y, width: w, height: h }); } }
+  class Path {
+    constructor() { this.ops = 0; }
+    move(p) { if (!(p instanceof Point)) throw new Error("move: не Point"); this.ops++; }
+    addLine(p) { if (!(p instanceof Point)) throw new Error("addLine: не Point"); this.ops++; }
+    addRoundedRect(r, a, b) { if (!(r instanceof Rect)) throw new Error("addRoundedRect: не Rect"); num(a, "rx"); num(b, "ry"); this.ops++; }
+    addEllipse(r) { if (!(r instanceof Rect)) throw new Error("addEllipse"); this.ops++; }
+    addRect(r) { if (!(r instanceof Rect)) throw new Error("addRect"); this.ops++; }
+  }
+  class DrawContext {
+    constructor() { this.font = null; log.canvases.push(this); }
+    addPath(p) { if (!(p instanceof Path)) throw new Error("addPath"); this.path = p; }
+    setStrokeColor(c) { if (!(c instanceof Color)) throw new Error("stroke: не Color"); }
+    setFillColor(c) { if (!(c instanceof Color)) throw new Error("fill: не Color"); }
+    setTextColor(c) { if (!(c instanceof Color)) throw new Error("text: не Color"); }
+    setLineWidth(w) { num(w, "lineWidth"); }
+    setFont(f) { if (!f || !f.name) throw new Error("setFont: нет шрифта"); this.font = f; }
+    setTextAlignedCenter() {} setTextAlignedLeft() {} setTextAlignedRight() {}
+    strokePath() { if (!this.path) throw new Error("strokePath без пути"); log.strokes++; }
+    fillPath() { if (!this.path) throw new Error("fillPath без пути"); log.fills++; }
+    fillEllipse(r) { if (!(r instanceof Rect)) throw new Error("fillEllipse"); log.fills++; }
+    fillRect(r) { if (!(r instanceof Rect)) throw new Error("fillRect"); log.fills++; }
+    drawTextInRect(t, r) { if (!this.font) throw new Error("текст без шрифта"); if (!(r instanceof Rect)) throw new Error("drawTextInRect"); log.drawTexts.push(String(t)); }
+    getImage() { if (!(this.size instanceof Size)) throw new Error("нет size"); log.images++; return { img: true, size: this.size, retina: this.respectScreenScale }; }
+  }
   class Stack {
     constructor() { this.children = []; }
-    addStack() { const s = new Stack(); this.children.push(s); return s; }
-    addText(t) { log.texts.push(t); const o = { text: t }; this.children.push(o); return o; }
-    addImage(i) { const o = { image: i }; this.children.push(o); return o; }
-    addSpacer() {} centerAlignContent() {} layoutVertically() {} setPadding() {}
+    addStack() { const st = new Stack(); this.children.push(st); return st; }
+    addText(t) { log.texts.push(String(t)); const o = { text: t }; this.children.push(o); return o; }
+    addImage(i) { if (!i || !i.img) throw new Error("addImage: не картинка"); const o = { image: i }; this.children.push(o); return o; }
+    addSpacer() {} centerAlignContent() {} topAlignContent() {} bottomAlignContent() {} layoutVertically() {} layoutHorizontally() {}
+    setPadding(...a) { a.forEach((v) => num(v, "padding")); }
   }
   class ListWidget extends Stack {
     constructor() { super(); log.widgets.push(this); }
-    async presentSmall() { log.presented = "small"; } async presentMedium() { log.presented = "medium"; } async presentLarge() { log.presented = "large"; }
+    async presentSmall() { log.presented.push("small"); } async presentMedium() { log.presented.push("medium"); } async presentLarge() { log.presented.push("large"); }
   }
   class Request {
     constructor(url) { this.url = url; log.fetched.push(url); }
     async loadJSON() { const { status, body, throws } = await respond(this.url, this.headers); if (throws) throw new Error(throws); this.response = { statusCode: status }; return body; }
   }
+  const queue = [...alerts];
   class Alert {
-    constructor() { this.fields = []; log.alerts++; }
-    addTextField(p, v) { this.fields.push(v); } addAction() {} addCancelAction() {} addDestructiveAction() {}
-    async present() { return alertIndex; } textFieldValue() { return alertText; }
+    constructor() { this.fields = []; this.actions = []; log.alerts++; }
+    addTextField(p, v) { this.fields.push(v); } addAction(t) { this.actions.push(t); } addCancelAction() {} addDestructiveAction(t) { this.actions.push(t); }
+    async present() { log.lastActions = this.actions; return queue.length ? queue.shift() : -1; } textFieldValue() { return alertText; }
   }
   const kc = { ...keychain };
   const Keychain = { contains: (k) => k in kc, get: (k) => kc[k], set: (k, v) => { kc[k] = v; }, remove: (k) => { delete kc[k]; } };
@@ -139,10 +187,11 @@ function makeEnv({ family = "medium", runsInApp = false, keychain = {}, param = 
     documentsDirectory: () => "/docs", joinPath: (a, b) => `${a}/${b}`,
     fileExists: (p) => p in log.files, readString: (p) => log.files[p], writeString: (p, s) => { log.files[p] = s; },
   }) };
+  class FakeDate extends Date { constructor(...a) { if (a.length) super(...a); else super(now); } static now() { return now; } }
   const env = {
-    Color, Font, Size, Point, Rect, Path, DrawContext, ListWidget, Request, Alert, Keychain, FileManager,
+    Color, Font, Size, Point, Rect, Path, DrawContext, ListWidget, Request, Alert, Keychain, FileManager, Date: FakeDate,
     LinearGradient: class {},
-    Device: { isUsingDarkAppearance: () => true },
+    Device: { isUsingDarkAppearance: () => dark, screenScale: () => scale },
     Script: { setWidget: (w) => { log.setWidget = w; }, complete: () => {} },
     config: { widgetFamily: family, runsInWidget: !runsInApp, runsInApp, runsInAccessoryWidget: family.startsWith("accessory") && !runsInApp },
     args: { widgetParameter: param },
@@ -152,25 +201,74 @@ function makeEnv({ family = "medium", runsInApp = false, keychain = {}, param = 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 async function runScript(opts) {
   const { env, log, kc } = makeEnv(opts);
-  const fn = new AsyncFunction(...Object.keys(env), src);
-  await fn(...Object.values(env));
+  await new AsyncFunction(...Object.keys(env), src)(...Object.values(env));
   return { log, kc };
 }
-const okResp = async (url, headers) => (headers?.Authorization === "Bearer ritm_sk_good" ? { status: 200, body: d } : { status: 401, body: { ok: false, error: "session_invalid" } });
-const allText = (log) => log.texts.join(" | ");
+const dv2 = buildWidgetData({ ...state, widgetGoals: { kcal: 2500, protein: 150, fat: 80, carbs: 290, waterBase: 2600, waterTrain: 3100, trainingByDay: { "1": "Тренировка A" } } }, { now: NOW });
+const okResp = async (url, headers) => (headers?.Authorization === "Bearer ritm_sk_good" ? { status: 200, body: dv2 } : { status: 401, body: { ok: false, error: "session_invalid" } });
+const allText = (log) => [...log.texts, ...log.drawTexts].join(" | ");
+const TOKEN = { ritm_widget_token: "ritm_sk_good" };
+const SLOT = 15 * 60 * 1000;
+const slotStart = Math.floor(FIXED_NOW / SLOT) * SLOT;
 
 for (const family of ["small", "medium", "large", "accessoryRectangular", "accessoryCircular", "accessoryInline"]) {
-  const { log } = await runScript({ family, keychain: { ritm_widget_token: "ritm_sk_good" }, respond: okResp });
-  const w = log.setWidget;
-  check(`${family}: виджет собран, url и обновление через ~15 мин`, w && w.url === d.openUrl && Math.abs(w.refreshAfterDate - Date.now() - 15 * 60000) < 5000);
-  if (family === "small") check("small: калории и вода", /437/.test(allText(log)) && /0,8 л/.test(allText(log)) && log.images >= 2, allText(log));
-  if (family === "medium") check("medium: задачи, бег и встреча", /Школа/.test(allText(log)) && /Бег 5 км/.test(allText(log)) && /Сегодня 17:00–18:00 · Встреча/.test(allText(log)), allText(log));
-  if (family === "large") check("large: БЖУ и привычки", /Белки/.test(allText(log)) && /47 \/ /.test(allText(log)) && /Привычки/.test(allText(log)), allText(log));
-  if (family === "accessoryRectangular") check("экран блокировки: строка с ккал и задачами", /437\/2 600 ккал/.test(allText(log)) && /2\/6 задач/.test(allText(log)), allText(log));
+  for (const dark of [true, false]) {
+    const { log } = await runScript({ family, keychain: TOKEN, respond: okResp, dark });
+    const w = log.setWidget;
+    const tag = `${family}/${dark ? "тёмная" : "светлая"}`;
+    check(`${tag}: виджет собран, ссылка RITM`, w && w.url === dv2.openUrl);
+    check(`${tag}: обновление на границе 15 мин (5–16 мин)`, w.refreshAfterDate - FIXED_NOW > 0 && w.refreshAfterDate - FIXED_NOW <= SLOT + 6000 && (w.refreshAfterDate.getTime() - 5000) % SLOT === 0);
+    check(`${tag}: картинки в разрешении экрана (×3, respectScreenScale=false)`, (family === "accessoryInline" || log.canvases.length > 0) && log.canvases.every((c) => c.respectScreenScale === false));
+    if (!family.startsWith("accessory")) check(`${tag}: фон-картинка с градиентом`, !!w.backgroundImage && w.backgroundImage.size.width === (family === "small" ? 158 : 338) * 3);
+  }
 }
 {
-  const { log } = await runScript({ family: "medium", param: "ritm_sk_good", respond: okResp });
-  check("токен из параметра виджета", /437/.test(allText(log)) && log.fetched[0].startsWith("https://ritmru.ru/api/widget?tz="));
+  const { log } = await runScript({ family: "small", keychain: TOKEN, respond: okResp, param: "mode=today" });
+  check("small/today: кольца, ккал и вода", /437/.test(allText(log)) && /0,8 л/.test(allText(log)) && /17%/.test(allText(log)) && log.strokes > 30, allText(log));
+}
+{
+  const { log } = await runScript({ family: "small", keychain: TOKEN, respond: okResp, param: "week" });
+  check("small/week: график и подписи дней", /неделя/.test(allText(log)) && /Вт/.test(log.drawTexts.join()) && /💪 3\/7/.test(allText(log)), allText(log));
+}
+{
+  const { log } = await runScript({ family: "medium", keychain: TOKEN, respond: okResp, param: "mode=week" });
+  check("medium/week: график недели, сводка", /3 из 7 тренировок/.test(allText(log)) && log.drawTexts.filter((t) => ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].includes(t)).length === 7, allText(log));
+}
+{
+  const { log, kc } = await runScript({ family: "medium", respond: okResp, param: "ritm_sk_good mode=tasks" });
+  check("параметр «токен + mode=tasks»: токен из параметра, режим задач", /задачи/.test(allText(log)) && /Ближайшая встреча/.test(allText(log)) && /Встреча/.test(allText(log)) && /2\/6/.test(allText(log)) && !kc.ritm_widget_token, allText(log));
+}
+{
+  const { log } = await runScript({ family: "medium", respond: okResp, param: "token=ritm_sk_good; mode=today" });
+  check("параметр «token=…; mode=today»", /Калории/.test(allText(log)) && /🏋️ Тренировка A|✅ Бег/.test(allText(log)) && log.fetched[0].startsWith("https://ritmru.ru/api/widget?tz="), allText(log));
+}
+{
+  // ротация: три соседних 15-минутных окна дают три разные карточки
+  const seen = [];
+  for (let k = 0; k < 3; k++) {
+    const { log } = await runScript({ family: "medium", keychain: TOKEN, respond: okResp, now: slotStart + k * SLOT + 60000 });
+    const t = allText(log);
+    seen.push(/Ближайшая встреча/.test(t) ? "tasks" : /из 7 тренировок/.test(t) ? "week" : /Калории/.test(t) ? "today" : "?");
+  }
+  check("medium без режима: карточки сменяются (Сегодня → Неделя → Задачи)", new Set(seen).size === 3 && !seen.includes("?"), seen.join());
+  const fixed = [];
+  for (let k = 0; k < 3; k++) {
+    const { log } = await runScript({ family: "medium", keychain: TOKEN, respond: okResp, now: slotStart + k * SLOT + 60000, param: "mode=week" });
+    fixed.push(/из 7 тренировок/.test(allText(log)));
+  }
+  check("mode=week фиксирует режим", fixed.every(Boolean));
+}
+{
+  const { log } = await runScript({ family: "large", keychain: TOKEN, respond: okResp });
+  const t = allText(log);
+  check("large: всё сразу — кольца, БЖУ, неделя, задачи, встреча", /Калории/.test(t) && /Б 47\/150/.test(t) && /Неделя/.test(t) && /Задачи/.test(t) && /Ближайшая встреча/.test(t) && log.drawTexts.includes("Вт"), t);
+  check("мотивационная строка", log.texts.some((x) => /[🏆🔥💪⚡💧🚀🌙🌱]/u.test(x) && x.length > 8), log.texts.join(" | "));
+}
+{
+  const { log } = await runScript({ family: "accessoryCircular", keychain: TOKEN, respond: okResp });
+  check("экран блокировки, круглый: дуга-гейдж с процентом", log.drawTexts.includes("17%") && log.drawTexts.includes("ккал") && log.strokes >= 2);
+  const r = await runScript({ family: "accessoryRectangular", keychain: TOKEN, respond: okResp });
+  check("экран блокировки, прямоугольный", /437\/2 500 ккал/.test(allText(r.log)) && /2\/6 задач/.test(allText(r.log)) && /🔥3/.test(allText(r.log)), allText(r.log));
 }
 {
   const { log } = await runScript({ family: "medium", respond: okResp });
@@ -181,22 +279,40 @@ for (const family of ["small", "medium", "large", "accessoryRectangular", "acces
   check("session_invalid → «Токен не подошёл»", /Токен не подошёл/.test(allText(log)));
 }
 {
-  // основной адрес недоступен → запасной
-  const { log } = await runScript({ family: "small", keychain: { ritm_widget_token: "ritm_sk_good" }, respond: async (url, h) => (url.startsWith("https://ritmru.ru") ? { throws: "offline" } : okResp(url, h)) });
+  const { log } = await runScript({ family: "small", keychain: TOKEN, respond: async (url, h) => (url.startsWith("https://ritmru.ru") ? { throws: "offline" } : okResp(url, h)) });
   check("запасной адрес ritmruu.netlify.app", log.fetched.length === 2 && log.fetched[1].startsWith("https://ritmruu.netlify.app") && /437/.test(allText(log)));
 }
 {
-  // офлайн: сначала успешный запуск (кэш), затем сеть пропала
-  const first = makeEnv({ family: "small", keychain: { ritm_widget_token: "ritm_sk_good" }, respond: okResp });
+  const first = makeEnv({ family: "small", keychain: TOKEN, respond: okResp, param: "today" });
   await new AsyncFunction(...Object.keys(first.env), src)(...Object.values(first.env));
-  const second = makeEnv({ family: "small", keychain: { ritm_widget_token: "ritm_sk_good" }, respond: async () => ({ throws: "offline" }) });
+  const second = makeEnv({ family: "small", keychain: TOKEN, respond: async () => ({ throws: "offline" }), param: "today" });
   second.log.files = first.log.files;
   await new AsyncFunction(...Object.keys(second.env), src)(...Object.values(second.env));
   check("офлайн → данные из кэша с пометкой", /437/.test(allText(second.log)) && /нет сети/.test(allText(second.log)), allText(second.log));
 }
 {
-  const { log, kc } = await runScript({ family: "medium", runsInApp: true, respond: okResp, alertIndex: 0, alertText: "  Bearer ritm_sk_good " });
-  check("первый запуск в приложении: спросил токен и сохранил в Keychain", log.alerts === 1 && kc.ritm_widget_token === "ritm_sk_good" && log.presented === "medium" && /437/.test(allText(log)));
+  // первый запуск в приложении: спросить токен (0 = «Сохранить»), затем меню: «Средний · Неделя» (3), «Большой» (5), «Готово» (-1)
+  const { log, kc } = await runScript({ family: "medium", runsInApp: true, respond: okResp, alerts: [0, 3, 5, -1], alertText: "  Bearer ritm_sk_good " });
+  check("первый запуск в приложении: токен сохранён в Keychain", kc.ritm_widget_token === "ritm_sk_good");
+  check("меню предпросмотра: все размеры и режимы", ["Маленький · Сегодня", "Маленький · Неделя", "Средний · Сегодня", "Средний · Неделя", "Средний · Задачи и встреча", "Большой"].every((x) => log.lastActions.includes(x)), String(log.lastActions));
+  check("предпросмотр показал средний и большой", log.presented.join() === "medium,large", log.presented.join());
+}
+{
+  // все превью подряд не падают ни в одной теме
+  for (const dark of [true, false]) {
+    const { log } = await runScript({ family: "medium", runsInApp: true, keychain: TOKEN, respond: okResp, alerts: [0, 1, 2, 3, 4, 5, -1], dark });
+    check(`все 6 превью (${dark ? "тёмная" : "светлая"})`, log.presented.join() === "small,small,medium,medium,medium,large", log.presented.join());
+  }
+}
+{
+  const { log } = await runScript({ family: "small", keychain: TOKEN, respond: okResp, param: "MODE=Tasks" });
+  check("small + mode=tasks → «Сегодня» (задачи только в среднем)", /437/.test(allText(log)) && !/неделя/.test(allText(log)));
+}
+{
+  // старый сервер без history — график не ломает виджет
+  const noHist = { ...dv2 }; delete noHist.history;
+  const { log } = await runScript({ family: "medium", keychain: TOKEN, param: "week", respond: async () => ({ status: 200, body: noHist }) });
+  check("без history: «Нет данных за неделю»", log.drawTexts.includes("Нет данных за неделю"));
 }
 
 if (failed) { console.error(`\nПровалено проверок: ${failed}`); process.exit(1); }
