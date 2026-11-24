@@ -5,6 +5,7 @@ import {
   FREE_VOICE_LOGS, applyVoicePatchDetailed, buildPromptContext, buildCalendarEvents, calendarFields, nameMatches, timeMinus, normTime,
 } from "../netlify/lib/voice-log.mjs";
 import { reminderEntriesFor, pushTaskReminders } from "../netlify/lib/reminder-push.mjs";
+import { resolvePro } from "../netlify/lib/pro-check.mjs";
 
 const mockAi = `{
   "food": [{"name": "банан", "grams": 120, "meal": null, "per100": {"kcal": 89, "protein": 1.1, "fat": 0.3, "carbs": 23}}],
@@ -293,6 +294,36 @@ console.log("16. новая задача на день — обычной кар
   check("сводка «завтра 15:00–16:00»", /Сборная завтра 15:00–16:00/.test(b.res.summary), b.res.summary);
   const back = validateVoicePatch({ tasks: [{ text: "x", time: "16:00", timeEnd: "15:00" }] }, { dateKey: "2026-11-23" });
   check("конец раньше начала — игнорируем, 1 час", back.tasks[0].durationMinutes === null);
+}
+
+console.log("17. Pro на сервере: подписчик не упирается в 6 записей, бесплатный — как раньше");
+{
+  const saved = { u: process.env.LIFETIME_PRO_USERNAMES, i: process.env.LIFETIME_PRO_IDS, a: process.env.ADMIN_TG_IDS };
+  delete process.env.LIFETIME_PRO_USERNAMES; delete process.env.LIFETIME_PRO_IDS; delete process.env.ADMIN_TG_IDS;
+  const paidDeps = { getPro: async () => ({ active: true, until: Date.now() + 864e5, plan: "month" }), getUser: async () => null };
+  const freeDeps = { getPro: async () => ({ active: false, until: 0 }), getUser: async () => null };
+  check("оплаченная Pro", (await resolvePro(1, {}, paidDeps)).active === true);
+  check("бесплатный — без Pro", (await resolvePro(1, { username: "someone" }, freeDeps)).active === false);
+  check("вечная Pro по нику из запроса (как в App.jsx)", (await resolvePro(2, { username: "@Doltiii" }, freeDeps)).source === "lifetime-username");
+  // токен Быстрых команд не несёт username — берём его из ritm-users
+  const viaUsers = await resolvePro(2, {}, { getPro: freeDeps.getPro, getUser: async () => ({ username: "doltiii" }) });
+  check("вечная Pro через токен (ник из ritm-users)", viaUsers.active === true);
+  process.env.ADMIN_TG_IDS = "111, 222";
+  check("ID из ADMIN_TG_IDS", (await resolvePro(222, {}, freeDeps)).active === true);
+  process.env.LIFETIME_PRO_IDS = "333";
+  check("ID из LIFETIME_PRO_IDS", (await resolvePro("333", {}, freeDeps)).active === true);
+  process.env.LIFETIME_PRO_USERNAMES = "apex";
+  check("свой список ников заменяет умолчание", (await resolvePro(4, { username: "apex" }, freeDeps)).active && !(await resolvePro(5, { username: "doltiii" }, freeDeps)).active);
+  check("сбой хранилища → не Pro, без исключения", (await resolvePro(9, {}, { getPro: async () => { throw new Error("x"); }, getUser: async () => { throw new Error("y"); } })).active === false);
+  for (const [k, v] of [["LIFETIME_PRO_USERNAMES", saved.u], ["LIFETIME_PRO_IDS", saved.i], ["ADMIN_TG_IDS", saved.a]]) { if (v == null) delete process.env[k]; else process.env[k] = v; }
+
+  // 7-я и 10-я запись подряд у Pro проходят, у бесплатного 7-я — limit
+  const full = { voiceLogs: { "2026-11-23": FREE_VOICE_LOGS + 3 } };
+  const pro = await runWith('{"waterMl": 200}', { state: full, isPro: true });
+  check("Pro: запись сверх 6 проходит", pro.res.ok === true && pro.state.voiceLogs["2026-11-23"] === FREE_VOICE_LOGS + 4, JSON.stringify(pro.res));
+  check("Pro: в ответе нет «осталось бесплатных»", !/бесплатн/i.test(pro.res.summary), pro.res.summary);
+  const free = await runWith('{"waterMl": 200}', { state: { voiceLogs: { "2026-11-23": FREE_VOICE_LOGS } }, isPro: false });
+  check("Free: седьмая запись — limit", free.res.ok === false && free.res.error === "limit");
 }
 
 if (failed) {

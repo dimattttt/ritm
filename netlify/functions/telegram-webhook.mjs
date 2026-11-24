@@ -15,6 +15,7 @@ import { completeAiText } from "../lib/ai-chat.mjs";
 import { loadUserState, saveUserState } from "../lib/voice-store.mjs";
 import { runVoiceLog, DEFAULT_TZ } from "../lib/voice-log.mjs";
 import { pushTaskReminders } from "../lib/reminder-push.mjs";
+import { resolvePro } from "../lib/pro-check.mjs";
 import { getStore } from "@netlify/blobs";
 
 // Документы — страницы сайта (public/legal). Адрес сайта берём так же, как для остальных ссылок бота (siteBase).
@@ -39,9 +40,9 @@ async function reminderTz(userId) {
   return DEFAULT_TZ;
 }
 
-async function voiceReply(userId, text) {
+async function voiceReply(userId, text, username = "") {
   const [pro, tz] = await Promise.all([
-    getPro(userId).catch(() => ({ active: false })),
+    resolvePro(userId, { username }).catch(() => ({ active: false })),
     reminderTz(userId),
   ]);
   return runVoiceLog({
@@ -226,7 +227,7 @@ export default async (req) => {
       await send(chatId, "Бот обновляет подключение — напиши то же самое ещё раз через пару секунд.");
     } else {
       // Свободный текст — голосовое управление: еда, вода, тренировка, бег, задачи и встречи, привычки, дневник, покупки
-      const result = await voiceReply(from.id, text);
+      const result = await voiceReply(from.id, text, from.username || "");
       if (result.ok) {
         // «Начни тренировку» — кнопка открывает Mini App сразу на тренировке (?voice=workout)
         const withParam = (param) => { try { const u = new URL(appUrl); u.searchParams.set("voice", param); return u.toString(); } catch { return appUrl; } };

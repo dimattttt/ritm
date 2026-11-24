@@ -5,6 +5,7 @@
 // Без параметров — сам тихо перепроверяет недавние неподтверждённые платежи (не чаще раза в 2 минуты),
 // чтобы оплаченная Pro не терялась, если человек закрыл окно оплаты раньше подтверждения.
 import { authUser } from "../lib/auth.mjs";
+import { resolvePro } from "../lib/pro-check.mjs";
 import { getPro, getPending, applyTransaction, restoreForUser, maybeReconcile } from "../lib/pro-store.mjs";
 
 const json = (data, status = 200) => Response.json(data, { status, headers: { "Cache-Control": "no-store" } });
@@ -40,8 +41,9 @@ export default async (req) => {
   } else {
     await maybeReconcile(user.id).catch(() => null);
   }
-  const pro = await getPro(user.id);
-  return json({ active: pro.active, until: pro.until || 0, plan: pro.plan || null, paymentStatus, restored });
+  // Та же проверка, что у голосового ввода: оплата/промо + вечная Pro по ID или нику (pro-check.mjs)
+  const pro = await resolvePro(user.id, { username: user.username }).catch(() => getPro(user.id));
+  return json({ active: !!pro.active, until: pro.until || 0, plan: pro.plan || null, lifetime: pro.source === "lifetime-id" || pro.source === "lifetime-username", paymentStatus, restored });
 };
 
 export const config = { path: "/api/pro-status", method: "GET" };

@@ -6,8 +6,8 @@ import { authUser, verifySession } from "../lib/auth.mjs";
 import { verifyShortcutToken } from "../lib/voice-token.mjs";
 import { completeAiText } from "../lib/ai-chat.mjs";
 import { loadUserState, saveUserState } from "../lib/voice-store.mjs";
-import { runVoiceLog, DEFAULT_TZ, calendarFields } from "../lib/voice-log.mjs";
-import { getPro } from "../lib/pro-store.mjs";
+import { runVoiceLog, DEFAULT_TZ, calendarFields, FREE_VOICE_LOGS } from "../lib/voice-log.mjs";
+import { resolvePro } from "../lib/pro-check.mjs";
 import { pushTaskReminders } from "../lib/reminder-push.mjs";
 
 const envGet = (key) => globalThis.Netlify?.env?.get(key) ?? process.env[key];
@@ -81,7 +81,8 @@ export default async (req) => {
       debug: { contentType: ctype, keys: body && typeof body === "object" ? Object.keys(body) : [], textType: body ? typeof body.text : null, rawLength: raw.length },
     }, 400);
   }
-  const pro = await getPro(auth.user.id).catch(() => ({ active: false }));
+  // Pro по данным сервера: оплата/промо, вечная Pro по ID или нику (см. netlify/lib/pro-check.mjs)
+  const pro = await resolvePro(auth.user.id, { username: auth.user.username }).catch(() => ({ active: false }));
 
   const result = await runVoiceLog({
     text,
@@ -95,7 +96,7 @@ export default async (req) => {
 
   if (!result.ok) return json({ ok: false, error: result.error, message: result.message }, result.status || 400);
   // Календарь iPhone: hasEvent, events[], eventTitle/eventStart/eventEnd — всегда есть, чтобы «Если» в Быстрой команде не спотыкалось
-  const out = { ok: true, message: result.summary, date: result.dateKey, ...calendarFields(result.events || []) };
+  const out = { ok: true, message: result.summary, date: result.dateKey, pro: !!pro.active, used: result.used, limit: pro.active ? null : FREE_VOICE_LOGS, ...calendarFields(result.events || []) };
   if (result.intent === "startWorkout") out.openUrl = appLink("workout");
   else if (result.intent === "startRun") out.openUrl = appLink("run");
   return json(out);

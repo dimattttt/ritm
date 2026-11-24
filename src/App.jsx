@@ -8125,7 +8125,7 @@ function RestorePurchaseButton({ T, onRestored }) {
       const r = await restorePurchaseApi();
       onRestored?.(r);
       if (r.restored?.granted > 0) { setState("done"); setMsg(`Нашёл оплату — Pro активна до ${proUntilText(r.until)}.`); }
-      else if (r.active) { setState("done"); setMsg(`Pro уже активна до ${proUntilText(r.until)}.`); }
+      else if (r.active) { setState("done"); setMsg(r.until > 0 ? `Pro уже активна до ${proUntilText(r.until)}.` : "Pro уже активна."); }
       else { setState("none"); setMsg(`Оплаченных платежей не нашлось. Если ты платил — напиши в поддержку ${LEGAL.support} и приложи чек из банка, вернём Pro вручную.`); }
     } catch (e) {
       setState("error");
@@ -9295,7 +9295,7 @@ function PaySheet({ T, onClose, onPaid, pro, reason }) {
   return (
     <Sheet T={T} title="Оплата RITM Pro" onClose={onClose}>
       {!pro?.active && <PaywallReason T={T} reason={reason} />}
-      {pro?.active && <Muted size={13} className="mb-3" style={{ color: T.a }}>Pro уже активна до {proUntilText(pro.until)}. Оплата продлит её — новые дни добавятся к оставшимся.</Muted>}
+      {pro?.active && pro.until > 0 && <Muted size={13} className="mb-3" style={{ color: T.a }}>Pro уже активна до {proUntilText(pro.until)}. Оплата продлит её — новые дни добавятся к оставшимся.</Muted>}
       <Card T={T} className="mb-4">
         <div className="font-semibold mb-3">Бесплатно vs Pro</div>
         <div className="grid mb-2" style={{ gridTemplateColumns: "1.3fr 0.8fr 0.8fr" }}>
@@ -10171,7 +10171,7 @@ function AIWeeklyInsight({ T, st, up, norm }) {
 }
 
 /* ============ Голосовой ввод / кнопка действия iPhone ============ */
-function VoiceInputSettings({ T }) {
+function VoiceInputSettings({ T, pro = false }) {
   const canManage = inTelegram() || (isWeb() && readSession());
   const [meta, setMeta] = useState(null);
   const [fresh, setFresh] = useState("");
@@ -10223,7 +10223,7 @@ function VoiceInputSettings({ T }) {
           <Muted size={13}>Чтобы подключить кнопку действия, войди через Telegram — токен привязан к аккаунту.</Muted>
         ) : (
           <>
-            <Muted size={12} className="mb-3">Бесплатно — {FREE_VOICE_LOGS} записей в день, в Pro без лимита. Токен хранится только у тебя: мы видим лишь факт, что он создан, само значение показывается один раз.</Muted>
+            <Muted size={12} className="mb-3">{pro ? "У тебя Pro — голосовые записи без лимита." : `Бесплатно — ${FREE_VOICE_LOGS} записей в день, в Pro без лимита.`} Токен хранится только у тебя: мы видим лишь факт, что он создан, само значение показывается один раз.</Muted>
             {meta?.hasToken && !fresh && (
               <Muted size={13} className="mb-3">Токен создан{created ? ` ${created}` : ""} ({meta.prefix}…). Значение повторно не показывается — если потерял, создай новый.</Muted>
             )}
@@ -10382,7 +10382,7 @@ function SettingsScreen({ T, st, up, openPay, go, norm, lifetimePro, openLegal, 
         )}
       </Card>
 
-      <VoiceInputSettings T={T} />
+      <VoiceInputSettings T={T} pro={!!st.pro} />
 
       <H2>Аллергии</H2>
       <Card T={T}>
@@ -11885,14 +11885,14 @@ export default function App() {
         // Статистика для админа и карточка прогресса для друзей — в Mini App и на сайте после входа,
         // у отдельного приложения нет постоянного Telegram ID для того и другого (см. комментарий
         // перед friendsAction выше). Обе попытки не критичны — у них свой catch внутри.
-        touchUserApi(st.pro);
+        touchUserApi(st.pro || lifetimePro || serverPro.active);
         publishSnapshotApi(buildFriendSnapshot(st, st.friendsPrivacy));
       } else if (session) {
         // Сайт после входа через бота: тот же Telegram ID, поэтому напоминания присылает бот
         // (даже когда сайт закрыт), а друзья видят карточку прогресса так же, как из Mini App
         const timezone = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Moscow"; } catch { return "Europe/Moscow"; } })();
         registerReminders({ reminderData: { timezone, reminders: st.reminders || DEFAULT_REMINDERS, tasks, trainingByDay } });
-        touchUserApi(st.pro);
+        touchUserApi(st.pro || lifetimePro || serverPro.active);
         publishSnapshotApi(buildFriendSnapshot(st, st.friendsPrivacy));
       } else if (isStandalone()) {
         const cfg = { ...DEFAULT_REMINDERS, ...(st.reminders || {}), enabled: st.reminders?.enabled ?? st.notify };
