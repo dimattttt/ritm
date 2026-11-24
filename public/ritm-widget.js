@@ -135,7 +135,7 @@ const fmtKcal = (n) => String(Math.round(n || 0)).replace(/\B(?=(\d{3})+(?!\d))/
 
 function text(stack, value, size, color = C.text, weight = "regular") {
   const t = stack.addText(String(value));
-  t.font = weight === "bold" ? Font.boldRoundedSystemFont(size) : weight === "semibold" ? Font.semiboldRoundedSystemFont(size) : Font.roundedSystemFont(size);
+  t.font = pickFont(weight, size);
   t.textColor = color;
   t.lineLimit = 1;
   return t;
@@ -353,3 +353,17 @@ async function main() {
 }
 
 await main();
+
+function pickFont(weight, size) {
+  const names = weight === "bold"
+    ? ["boldRoundedSystemFont", "boldSystemFont"]
+    : weight === "semibold"
+      ? ["semiboldRoundedSystemFont", "semiboldSystemFont", "boldSystemFont"]
+      : ["regularRoundedSystemFont", "roundedSystemFont", "systemFont"];
+  for (const n of names) {
+    if (typeof Font[n] === "function") {
+      try { return Font[n](size); } catch (e) {}
+    }
+  }
+  return Font.systemFont(size);
+}
