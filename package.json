@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "test": "node --test src/voiceAssistant.test.js",
-    "test:server": "node scripts/test-voice-log.mjs && node scripts/test-widget.mjs",
+    "test:server": "node scripts/test-voice-log.mjs && node scripts/test-widget.mjs && node scripts/test-coach.mjs",
     "build": "vite build && vite build --ssr src/prerender.jsx --outDir dist-ssr && node scripts/prerender.mjs",
     "preview": "vite preview",
     "electron": "electron .",

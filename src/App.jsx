@@ -7,7 +7,7 @@ import {
   Flag, ListFilter, AlignLeft, ChevronDown, Tag,
   TrendingUp, Award, Library, Medal, LayoutGrid, Target, Ban, RefreshCcw, NotebookPen, Feather, Share2, Ruler, ShoppingCart, Heart, MoreHorizontal,
   LayoutDashboard, ChevronUp, EyeOff, Eye, Sunrise, Coffee,
-  Users, UserPlus, BarChart3,
+  Users, UserPlus, BarChart3, ClipboardList,
   LogIn, LogOut, Smartphone, Share, Monitor, UserRound, Cloud, SquarePlus,
   ShoppingBasket, MapPin, Pill, LocateFixed, Route, Wallet, ExternalLink, Phone, Globe, ShieldAlert, Search, Trees, Shuffle, Pencil, Undo2,
 } from "lucide-react";
@@ -25,6 +25,7 @@ import {
   FREE_SCANS, FREE_HABITS, FREE_WORKOUTS, FREE_HISTORY, FREE_ASSISTANT, FREE_VOICE_LOGS,
 } from "./plans.js";
 import { CountUp, observeReveal } from "./motion.jsx";
+import CoachMode from "./CoachMode.jsx";
 import { goal, goalOnce } from "./analytics.js";
 import { speechErrorMessage } from "./voiceAssistant.js";
 import { STORES, BASKET_PRODUCTS, BASKET_MODES, BASKET_PRICES_NOTE, storeById, buildBasket, amountLabel, weightHint, storeSiteUrl, productSearchUrl } from "./basket.js";
@@ -10302,6 +10303,17 @@ function SettingsScreen({ T, st, up, openPay, go, norm, lifetimePro, openLegal, 
         {!st.pro && <Primary T={T} onClick={openPay}>Открыть Pro от {RUB_PRICE.month} ₽</Primary>}
       </Card>
 
+      <Card T={T} className="mt-3" onClick={() => go("coach")} style={{ background: `linear-gradient(135deg, ${T.a}14, ${T.b}0D)` }}>
+        <div className="flex items-center gap-3">
+          <span className="rounded-xl flex items-center justify-center flex-shrink-0" style={{ width: 40, height: 40, background: T.grad, color: T.on }}><ClipboardList size={19} /></span>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold">Режим тренера</div>
+            <Muted size={12.5}>Команда, задания на бег и силовые, отчёты с треками, чат</Muted>
+          </div>
+          <ChevronRight size={18} style={{ color: MUTED }} />
+        </div>
+      </Card>
+
       {!lifetimePro && proUntil > 0 && <div className="mt-3"><Ghost T={T} onClick={openPay}>Продлить Pro</Ghost></div>}
       {!lifetimePro && <div className="mt-2"><Ghost T={T} onClick={openRedeemPromo}><Sparkles size={16} /> Есть промокод?</Ghost></div>}
       {!lifetimePro && (inTelegram() || (isWeb() && readSession())) && <RestorePurchaseButton T={T} onRestored={onProRestored} />}
@@ -11533,6 +11545,7 @@ const TABS_ALL = [
   ["faith", "Вера", Feather],
   ["charge", "Зарядка", Sunrise],
   ["friends", "Друзья", Users],
+  ["coach", "Тренер", ClipboardList],
 ];
 const MIN_VISIBLE_TABS = 3;
 // Новые разделы по умолчанию скрыты, чтобы у существующих пользователей нижняя панель
@@ -11981,6 +11994,7 @@ export default function App() {
     if (after === "pay") setSheet({ type: "pay" });
     else if (after === "redeemPromo") setSheet({ type: "redeemPromo" });
     else if (after === "friends") setTab("friends");
+    else if (after === "coach") setTab("coach");
   }, [loaded, !!st.profile]);
 
   const week = st.profile ? Math.min(3, Math.floor((Date.now() - (st.profile.created || Date.now())) / 6048e5)) : 0;
@@ -12001,6 +12015,15 @@ export default function App() {
   // 2) намерение st.voiceIntent, которое сервер записал в данные: подхватываем при открытии или после
   //    синхронизации, если оно сегодняшнее и не старше 6 часов. Выполненное помечаем в voiceIntentDone.
   const voiceParamRef = useRef(null);
+  const [coachInvite, setCoachInvite] = useState("");
+  const coachKit = useMemo(() => ({
+    Card, Primary, Ghost, Segmented, H1, H2, Muted, Loader, apiUrl, authHeaders,
+    available: inTelegram() || (isWeb() && !!readSession()),
+    loginPanel: isWeb() ? <TelegramLoginPanel T={T} after="coach" /> : <Muted>Режим тренера доступен в Telegram Mini App и на сайте после входа через Telegram.</Muted>,
+    openLink: openExternalLink,
+    openTelegramLink: (url) => { const t = tgApp(); if (t?.openTelegramLink) t.openTelegramLink(url); else openExternalLink(url); },
+    haptic: tapFeedback,
+  }), [T]);
   const voiceParamAtRef = useRef(0);
   if (voiceParamRef.current === null) {
     let p = "";
@@ -12029,7 +12052,9 @@ export default function App() {
     if (param) {
       voiceParamRef.current = "";
       voiceParamAtRef.current = Date.now();
-      if (param === "workout") launchVoiceAction("startWorkout");
+      // Приглашение тренера: t.me/ritmrubot?startapp=coach_<код> → экран «Тренер» с карточкой «Принять»
+      if (param.startsWith("coach_")) { setCoachInvite(param.slice(6).replace(/[^a-z0-9]/g, "")); setTab("coach"); }
+      else if (param === "workout") launchVoiceAction("startWorkout");
       else if (param === "run") launchVoiceAction("startRun");
       else if (param === "settings" || TABS_ALL.some(([id]) => id === param)) setTab(param);
       if (pending) up({ voiceIntentDone: vi.at });
@@ -12227,6 +12252,7 @@ export default function App() {
             {tab === "faith" && <FaithScreen T={T} st={view} up={up} />}
             {tab === "charge" && <ChargeScreen T={T} />}
             {tab === "friends" && <FriendsScreen T={T} st={view} up={up} />}
+            {tab === "coach" && <CoachMode T={T} kit={coachKit} inviteCode={coachInvite} onInviteHandled={() => setCoachInvite("")} />}
             {tab === "settings" && <SettingsScreen T={T} st={view} up={up} openPay={openPay} go={go} norm={norm} lifetimePro={lifetimePro} openLegal={(type) => setSheet({ type })} sync={sync} onSyncNow={() => syncRef.current?.run()} proUntil={serverPro.active ? serverPro.until : 0} openRecalc={() => setSheet({ type: "recalc" })} openTabs={() => setSheet({ type: "tabs" })} openTodayLayout={() => setSheet({ type: "todayLayout" })} openTour={() => setReplayTour(true)} promoAdmin={promoAdmin} openRedeemPromo={() => setSheet({ type: "redeemPromo" })} openPromoAdmin={() => setSheet({ type: "promoAdmin" })} openAbout={() => setSheet({ type: "about" })} openAdminStats={() => setSheet({ type: "adminStats" })}
               openLogin={() => setSheet({ type: "login" })} openInstall={() => setSheet({ type: "install" })}
               openAdminPro={() => setSheet({ type: "adminPro" })}
